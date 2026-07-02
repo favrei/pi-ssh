@@ -95,7 +95,8 @@ export default function (pi: ExtensionAPI) {
 	function statusLabel(t: SshTarget | null): string {
 		if (!t) return "";
 		const act = t.defaultCommandPrefix ? ` ⚡${t.defaultCommandPrefix.length > 28 ? `${t.defaultCommandPrefix.slice(0, 27)}…` : t.defaultCommandPrefix}` : "";
-		return `SSH: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3)"}${act}`;
+		const dirty = t.loginEnvDirty ? " ⟳ env stale" : "";
+		return `SSH: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3)"}${act}${dirty}`;
 	}
 
 	// Last seen ui handle, captured from any ctx, so the connection-level widget
@@ -148,6 +149,13 @@ export default function (pi: ExtensionAPI) {
 		else stopWidgetPoller();
 	}
 
+	function clearLoginEnvDirty(socket?: string): void {
+		if (!target || (socket && target.socket !== socket)) return;
+		if (!target.loginEnvDirty) return;
+		target.loginEnvDirty = false;
+		refreshStatus(null);
+	}
+
 	let tunnelRestoreTimer: NodeJS.Timeout | null = null;
 	let tunnelRestoreSocket: string | undefined;
 	function scheduleTunnelRestore(socket?: string): void {
@@ -186,6 +194,7 @@ export default function (pi: ExtensionAPI) {
 		const label = statusLabel(target);
 		if (uiRef) uiRef.setStatus("ssh", label ? uiRef.theme.fg("accent", label) : "");
 		if (phase === "recovered") {
+			clearLoginEnvDirty(target?.socket);
 			uiRef?.notify(`SSH reconnected: ${info.remote}`, "info");
 			// The respawned master lost its -L forwards; re-issue tracked tunnels.
 			scheduleTunnelRestore(target?.socket);
@@ -196,6 +205,7 @@ export default function (pi: ExtensionAPI) {
 
 	setMasterRecycledNotifier((info) => {
 		if (target?.socket !== info.socket) return;
+		clearLoginEnvDirty(info.socket);
 		refreshStatus(null);
 		scheduleTunnelRestore(info.socket);
 	});
@@ -430,6 +440,7 @@ export default function (pi: ExtensionAPI) {
 	function connectedText(t: SshTarget): string {
 		const lines = [`SSH connected: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3; ssh_edit uses fallback)"}`];
 		lines.push(`  shell: ${t.shellKind} (${t.loginShell})${t.shellNote ? ` - ${t.shellNote}` : ""}`);
+		if (t.loginEnvDirty) lines.push("  login env: stale; run /ssh reconnect or ssh_connect fresh:true");
 		if (t.defaultCommandPrefix) lines.push(`  activation (every ssh_bash/ssh_process): ${t.defaultCommandPrefix}`);
 		if (t.defaultEnv && Object.keys(t.defaultEnv).length) lines.push(`  env: ${Object.keys(t.defaultEnv).join(", ")}`);
 		const activeTunnels = ctx.tunnels?.list?.() ?? [];

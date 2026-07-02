@@ -12,7 +12,7 @@ import type {
 	WriteOperations,
 } from "@earendil-works/pi-coding-agent";
 import type { EditResult, RunResult, SshTarget } from "./types";
-import { grepArgs, shQuote, stripTrailingSlash, toRemotePath, withFileLock } from "./utils";
+import { grepArgs, lastNonEmptyLine, shQuote, stripTrailingSlash, toRemotePath, withFileLock } from "./utils";
 import {
 	baseSshOptions,
 	closeMaster,
@@ -98,7 +98,7 @@ export function createRemoteLsOps(t: SshTarget, localCwd: string): LsOperations 
 			const script = "import json, os, sys; print(json.dumps(os.listdir(sys.argv[1])))";
 			const r = await runRemoteCommand(t, `python3 -c ${shQuote(script)} ${shQuote(toRemote(p))}`);
 			if (r.code !== 0) throw new Error(r.stderr.toString().trim() || sshFailureMessage(r));
-			return JSON.parse(r.stdout.toString()) as string[];
+			return JSON.parse(lastNonEmptyLine(r.stdout.toString()) || "[]") as string[];
 		},
 	};
 }
@@ -145,7 +145,7 @@ print(json.dumps(candidates[:limit]))
 			const payload = JSON.stringify({ root: toRemote(cwd), pattern, limit: options.limit });
 			const r = await runRemoteCommand(t, `python3 -c ${shQuote(script)}`, { stdin: payload });
 			if (r.code !== 0) throw new Error(r.stderr.toString().trim() || sshFailureMessage(r));
-			const rels = JSON.parse(r.stdout.toString()) as string[];
+			const rels = JSON.parse(lastNonEmptyLine(r.stdout.toString()) || "[]") as string[];
 			// Prefix the LOCAL search cwd so createFindTool's `p.slice(searchPath+1)`
 			// yields the remote-root-relative path verbatim.
 			const base = stripTrailingSlash(cwd);

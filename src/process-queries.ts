@@ -59,7 +59,7 @@ export function formatProcRows(rows: ProcRow[]): string {
 }
 
 export async function listProcesses(t: SshTarget, signal?: AbortSignal): Promise<ProcRow[]> {
-	const r = await runRemoteCommand(t, buildProcessListCommand(processRoot(t)), { signal });
+	const r = await runRemoteCommand(t, buildProcessListCommand(processRoot(t)), { signal, login: false });
 	if (r.code !== 0) throw new Error(`${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
 	return parseProcRows(r.stdout.toString());
 }

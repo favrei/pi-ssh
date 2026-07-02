@@ -56,6 +56,51 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
 	}
 }
 
+const LOGIN_ENV_DOTFILES = new Set([
+	".zshrc",
+	".zshenv",
+	".zprofile",
+	".zlogin",
+	".bashrc",
+	".bash_profile",
+	".bash_login",
+	".profile",
+]);
+
+export function loginEnvFileKind(remotePath: string): string | null {
+	const normalized = posix.normalize(remotePath);
+	const base = posix.basename(normalized);
+	if (LOGIN_ENV_DOTFILES.has(base)) return base;
+	if (normalized.endsWith("/.ssh/environment")) return ".ssh/environment";
+	if (normalized.endsWith("/.ssh/rc")) return ".ssh/rc";
+	if (normalized === "/etc/profile") return "/etc/profile";
+	if (normalized === "/etc/environment") return "/etc/environment";
+	if (normalized.startsWith("/etc/zsh/") && normalized !== "/etc/zsh") return "/etc/zsh/*";
+	if (normalized.startsWith("/etc/profile.d/") && normalized !== "/etc/profile.d") return "/etc/profile.d/*";
+	return null;
+}
+
+export function appendTextContent<T extends { [key: string]: unknown; content?: unknown }>(result: T, text: string): T {
+	const copy = { ...result } as T & { content?: unknown[] };
+	const content = Array.isArray(result.content) ? [...result.content] : [];
+	for (let i = content.length - 1; i >= 0; i--) {
+		const block = content[i] as { type?: unknown; text?: unknown };
+		if (block?.type === "text" && typeof block.text === "string") {
+			const sep = block.text.endsWith("\n") ? "" : "\n";
+			content[i] = { ...block, text: `${block.text}${sep}${text}` };
+			copy.content = content;
+			return copy;
+		}
+	}
+	content.push({ type: "text", text });
+	copy.content = content;
+	return copy;
+}
+
+export function lastNonEmptyLine(text: string): string {
+	return text.trim().split("\n").filter(Boolean).pop() ?? "";
+}
+
 export function toRemotePath(path: string, localCwd: string, remoteCwd: string, remoteHome?: string): string {
 	const normalizedRemoteCwd = stripTrailingSlash(remoteCwd);
 	if (path === "~" || path.startsWith("~/")) {

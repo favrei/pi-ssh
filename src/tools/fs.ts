@@ -16,7 +16,7 @@ import {
 	createWriteTool,
 } from "@earendil-works/pi-coding-agent";
 import type { SshContext } from "../context";
-import { shQuote, toRemotePath, withFileLock } from "../utils";
+import { appendTextContent, loginEnvFileKind, shQuote, toRemotePath, withFileLock } from "../utils";
 import { withReconnect } from "../ssh/reconnect";
 import { runRemoteCommand, sshFailureMessage } from "../ssh/transport";
 import {
@@ -30,8 +30,19 @@ import {
 } from "../remote-ops";
 
 export function setupFsTools(ssh: SshContext): void {
-	const { pi, localCwd, requireTarget, render } = ssh;
+	const { pi, localCwd, requireTarget, refreshStatus, render } = ssh;
 	const { str, accentRemotePath, readLineRange, remoteDisplayPath, sshTitle, renderEditDiffResult } = render;
+
+	function noteLoginEnvWrite<T extends { content?: unknown }>(t: ReturnType<SshContext["requireTarget"]>, remotePath: string, result: T, toolCtx?: any): T {
+		const kind = loginEnvFileKind(remotePath);
+		if (!kind) return result;
+		t.loginEnvDirty = true;
+		refreshStatus(toolCtx);
+		return appendTextContent(
+			result,
+			`Note: ${remotePath} affects SSH login environment (${kind}). Run \`ssh_connect\` with \`fresh:true\` or \`/ssh reconnect\` to refresh this pi session. Your own terminal SSH may hold a separate stale ControlMaster; use \`/ssh doctor\` for diagnostics.`,
+		);
+	}
 
 	const localRead = createReadTool(localCwd);
 	const localReadDef = createReadToolDefinition(localCwd);
@@ -136,10 +147,12 @@ export function setupFsTools(ssh: SshContext): void {
 		renderCall(args: any, theme: any, context: any) {
 			return sshTitle("write", accentRemotePath(args?.path, theme), theme, context);
 		},
-		async execute(id, params, signal, onUpdate) {
+		async execute(id, params, signal, onUpdate, ctx) {
 			const t = requireTarget();
+			const remotePath = toRemotePath(params.path, localCwd, t.remoteCwd, t.remoteHome);
 			const tool = createWriteTool(localCwd, { operations: createRemoteWriteOps(t, localCwd) });
-			return withReconnect(() => tool.execute(id, params, signal, onUpdate));
+			const result = await withReconnect(() => tool.execute(id, params, signal, onUpdate));
+			return noteLoginEnvWrite(t, remotePath, result, ctx);
 		},
 	});
 
@@ -164,7 +177,7 @@ export function setupFsTools(ssh: SshContext): void {
 			const rest = `${accentRemotePath(args?.remotePath, theme)}${src ? ` ${theme.fg("muted", src)}` : ""}`;
 			return sshTitle("secret", rest, theme, context);
 		},
-		async execute(_id, params: { remotePath: string; fromEnv?: string; fromFile?: string; mode?: string; appendNewline?: boolean }) {
+		async execute(_id, params: { remotePath: string; fromEnv?: string; fromFile?: string; mode?: string; appendNewline?: boolean }, _signal, _onUpdate, ctx) {
 			const t = requireTarget();
 			if ((params.fromEnv ? 1 : 0) + (params.fromFile ? 1 : 0) !== 1) {
 				throw new Error("ssh_secret_write requires exactly one of fromEnv or fromFile");
@@ -187,7 +200,7 @@ export function setupFsTools(ssh: SshContext): void {
 			const cmd = `mkdir -p -- "$(dirname ${q})" && ( umask 077 && cat > ${q} ) && chmod ${mode} ${q}`;
 			const r = await withReconnect(() => withFileLock(`${t.remote}:${remotePath}`, () => runRemoteCommand(t, cmd, { stdin: value })));
 			if (r.code !== 0) throw new Error(`${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}`);
-			return { content: [{ type: "text" as const, text: `Wrote secret (${value.length} bytes) to ${t.remote}:${remotePath} (mode ${mode}). Value not recorded.` }], details: undefined };
+			return noteLoginEnvWrite(t, remotePath, { content: [{ type: "text" as const, text: `Wrote secret (${value.length} bytes) to ${t.remote}:${remotePath} (mode ${mode}). Value not recorded.` }], details: undefined }, ctx);
 		},
 	});
 
@@ -207,14 +220,14 @@ export function setupFsTools(ssh: SshContext): void {
 		renderResult(result: any, _options: any, theme: any, context: any) {
 			return renderEditDiffResult(result, theme, context);
 		},
-		async execute(id, params: { path: string; edits: Array<{ oldText: string; newText: string }> }, signal, onUpdate) {
+		async execute(id, params: { path: string; edits: Array<{ oldText: string; newText: string }> }, signal, onUpdate, ctx) {
 			const t = requireTarget();
 			const remotePath = toRemotePath(params.path, localCwd, t.remoteCwd, t.remoteHome);
 
 			if (t.hasPython) {
 				try {
 					const res = await withReconnect(() => remotePatchEdit(t, remotePath, params.edits, signal));
-					return {
+					const result = {
 						content: [
 							{
 								type: "text" as const,
@@ -223,6 +236,7 @@ export function setupFsTools(ssh: SshContext): void {
 						],
 						details: { diff: res.diff, patch: res.patch, firstChangedLine: res.firstChangedLine },
 					};
+					return noteLoginEnvWrite(t, remotePath, result, ctx);
 				} catch (e) {
 					// If python3 vanished mid-session, fall through to rewrite path.
 					if (!/python3: (not found|command not found)/.test(String(e))) {
@@ -234,7 +248,8 @@ export function setupFsTools(ssh: SshContext): void {
 
 			// Fallback: read-rewrite-write via the edit tool's own diff engine.
 			const tool = createEditTool(localCwd, { operations: createRemoteEditOps(t, localCwd, false) });
-			return withReconnect(() => withFileLock(`${t.remote}:${remotePath}`, () => tool.execute(id, params, signal, onUpdate)));
+			const result = await withReconnect(() => withFileLock(`${t.remote}:${remotePath}`, () => tool.execute(id, params, signal, onUpdate)));
+			return noteLoginEnvWrite(t, remotePath, result, ctx);
 		},
 	});
 }

@@ -13,6 +13,8 @@ export interface SshTarget {
 	shellKind: ShellKind;
 	shellNote?: string;
 	shellStartupStderr?: string;
+	/** True after editing a file that affects login-time shell/PAM environment. */
+	loginEnvDirty?: boolean;
 	/** Shell prefix applied before every ssh_bash / ssh_process command (e.g. venv activation). */
 	defaultCommandPrefix?: string;
 	/** Environment exported before every ssh_bash / ssh_process command. */
