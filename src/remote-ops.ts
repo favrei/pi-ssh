@@ -16,7 +16,9 @@ import { grepArgs, shQuote, stripTrailingSlash, toRemotePath, withFileLock } fro
 import {
 	baseSshOptions,
 	closeMaster,
+	isTransportSuccessAfterRetry,
 	isRetryableSshFailure,
+	notifyMasterRecycled,
 	remoteShell,
 	runRemoteCommand,
 	sshConnArgs,
@@ -194,6 +196,7 @@ export function createRemoteBashOps(t: SshTarget, localCwd: string, opts?: { tty
 		exec: (command, cwd, { onData, signal, timeout }) =>
 			new Promise((resolve, reject) => {
 				const cmd = `cd -- ${shQuote(toRemote(cwd))} && ${command}`;
+				let retried = false;
 				const attempt = (allowRetry: boolean) => {
 					if (signal?.aborted) {
 						reject(new Error("aborted"));
@@ -229,8 +232,12 @@ export function createRemoteBashOps(t: SshTarget, localCwd: string, opts?: { tty
 						const result: RunResult = { code, signal: closeSignal, stdout: Buffer.concat(out), stderr: Buffer.concat(err), timedOut };
 						if (allowRetry && isRetryableSshFailure(result) && !signal?.aborted) {
 							await closeMaster(t, { reason: "retry" });
+							retried = true;
 							attempt(false);
 							return;
+						}
+						if (retried && isTransportSuccessAfterRetry(result)) {
+							notifyMasterRecycled({ remote: t.remote, socket: t.socket, attempt: 2 });
 						}
 						if (signal?.aborted) reject(new Error("aborted"));
 						else if (timedOut) reject(new Error(`timeout:${timeout}`));

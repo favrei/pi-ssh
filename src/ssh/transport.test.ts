@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createCloseGuard } from "./transport";
+import { createCloseGuard, isTransportSuccessAfterRetry } from "./transport";
+import type { RunResult } from "../types";
 
 test("createCloseGuard merges in-flight closes for the same socket", async () => {
 	let release!: () => void;
@@ -40,4 +41,20 @@ test("createCloseGuard debounces only retry cleanup", async () => {
 	now += 1;
 	assert.equal(await guard("sock", { reason: "retry" }, close), true);
 	assert.equal(calls, 3);
+});
+
+test("isTransportSuccessAfterRetry distinguishes command failure from transport failure", () => {
+	const result = (patch: Partial<RunResult>): RunResult => ({
+		code: 0,
+		signal: null,
+		stdout: Buffer.alloc(0),
+		stderr: Buffer.alloc(0),
+		timedOut: false,
+		...patch,
+	});
+	assert.equal(isTransportSuccessAfterRetry(result({ code: 0 })), true);
+	assert.equal(isTransportSuccessAfterRetry(result({ code: 1 })), true);
+	assert.equal(isTransportSuccessAfterRetry(result({ code: 255, stderr: Buffer.from("mux_client_request_session failed") })), false);
+	assert.equal(isTransportSuccessAfterRetry(result({ timedOut: true })), false);
+	assert.equal(isTransportSuccessAfterRetry(result({ signal: "SIGTERM" })), false);
 });

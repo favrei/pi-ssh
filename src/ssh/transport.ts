@@ -111,6 +111,26 @@ export function isRetryableSshFailure(r: RunResult): boolean {
 	return /mux_client_request_session|Control socket connect|Connection reset|Connection closed|Broken pipe|Connection timed out|Connection refused|No route to host|kex_exchange_identification/i.test(message);
 }
 
+export interface MasterRecycledInfo {
+	remote: string;
+	socket: string;
+	attempt: number;
+}
+
+let masterRecycledNotifier: ((info: MasterRecycledInfo) => void) | null = null;
+
+export function setMasterRecycledNotifier(fn: ((info: MasterRecycledInfo) => void) | null): void {
+	masterRecycledNotifier = fn;
+}
+
+export function notifyMasterRecycled(info: MasterRecycledInfo): void {
+	masterRecycledNotifier?.(info);
+}
+
+export function isTransportSuccessAfterRetry(r: RunResult): boolean {
+	return !r.timedOut && !r.signal && !isRetryableSshFailure(r);
+}
+
 export async function runRemoteCommand(t: SshTarget, command: string, opts?: RunOptions): Promise<RunResult> {
 	const shell = remoteShell(command, opts?.login !== false);
 	const reconnect = opts?.reconnect ?? reconnectCtx.getStore()?.reconnect ?? false;
@@ -130,6 +150,9 @@ export async function runRemoteCommand(t: SshTarget, command: string, opts?: Run
 	}
 	if (reconnect && attempt > 1) {
 		notifyReconnect(isRetryableSshFailure(r) ? "gaveup" : "recovered", { remote: t.remote, attempt, max: maxAttempts, delayMs: 0 });
+	}
+	if (attempt > 1 && isTransportSuccessAfterRetry(r)) {
+		notifyMasterRecycled({ remote: t.remote, socket: t.socket, attempt });
 	}
 	return r;
 }

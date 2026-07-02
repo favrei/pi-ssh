@@ -51,7 +51,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Activation, SshTarget } from "./types";
 import { buildEnvExports, shQuote, toRemotePath } from "./utils";
 import { setReconnectNotifier } from "./ssh/reconnect";
-import { closeMaster, runRemoteCommand } from "./ssh/transport";
+import { closeMaster, runRemoteCommand, setMasterRecycledNotifier } from "./ssh/transport";
 import { resolveTarget } from "./ssh/target";
 import { sendProcessMessage } from "./notify";
 import { createRender } from "./render";
@@ -148,22 +148,21 @@ export default function (pi: ExtensionAPI) {
 		else stopWidgetPoller();
 	}
 
-	// Surface backoff-reconnection progress in the status line; notify on the outcome.
-	// Reads uiRef/target lazily at call time, so a single assignment stays current.
-	setReconnectNotifier((phase, info) => {
-		if (!uiRef) return;
-		if (phase === "retrying") {
-			uiRef.setStatus("ssh", uiRef.theme.fg("warning", `Reconnecting ${info.remote} \u2014 attempt ${info.attempt}/${info.max}, retry in ${Math.round(info.delayMs / 1000)}s\u2026`));
-			return;
-		}
-		const label = statusLabel(target);
-		uiRef.setStatus("ssh", label ? uiRef.theme.fg("accent", label) : "");
-		if (phase === "recovered") {
-			uiRef.notify(`SSH reconnected: ${info.remote}`, "info");
-			// The respawned master lost its -L forwards; re-issue tracked tunnels.
+	let tunnelRestoreTimer: NodeJS.Timeout | null = null;
+	let tunnelRestoreSocket: string | undefined;
+	function scheduleTunnelRestore(socket?: string): void {
+		if (socket && target?.socket !== socket) return;
+		if (tunnelRestoreTimer) return;
+		tunnelRestoreSocket = socket;
+		tunnelRestoreTimer = setTimeout(() => {
+			tunnelRestoreTimer = null;
+			const expectedSocket = tunnelRestoreSocket;
+			tunnelRestoreSocket = undefined;
+			if (expectedSocket && target?.socket !== expectedSocket) return;
+			if (!target) return;
 			void ctx.tunnels?.restoreAll().then((res) => {
-				if (res.restored > 0 || res.failed > 0) {
-					uiRef?.notify(
+				if ((res.restored > 0 || res.failed > 0) && uiRef) {
+					uiRef.notify(
 						res.failed === 0
 							? `SSH tunnels restored: ${res.restored}`
 							: `SSH tunnels restored: ${res.restored}, failed: ${res.failed}`,
@@ -171,9 +170,34 @@ export default function (pi: ExtensionAPI) {
 					);
 				}
 			}).catch(() => {});
-		} else {
-			uiRef.notify(`SSH reconnect to ${info.remote} failed after ${info.max} attempts`, "error");
+		}, 2000);
+		tunnelRestoreTimer.unref?.();
+	}
+
+	// Surface backoff-reconnection progress in the status line; notify on the outcome.
+	// Reads uiRef/target lazily at call time, so a single assignment stays current.
+	setReconnectNotifier((phase, info) => {
+		if (phase === "retrying") {
+			if (uiRef) {
+				uiRef.setStatus("ssh", uiRef.theme.fg("warning", `Reconnecting ${info.remote} \u2014 attempt ${info.attempt}/${info.max}, retry in ${Math.round(info.delayMs / 1000)}s\u2026`));
+			}
+			return;
 		}
+		const label = statusLabel(target);
+		if (uiRef) uiRef.setStatus("ssh", label ? uiRef.theme.fg("accent", label) : "");
+		if (phase === "recovered") {
+			uiRef?.notify(`SSH reconnected: ${info.remote}`, "info");
+			// The respawned master lost its -L forwards; re-issue tracked tunnels.
+			scheduleTunnelRestore(target?.socket);
+		} else {
+			uiRef?.notify(`SSH reconnect to ${info.remote} failed after ${info.max} attempts`, "error");
+		}
+	});
+
+	setMasterRecycledNotifier((info) => {
+		if (target?.socket !== info.socket) return;
+		refreshStatus(null);
+		scheduleTunnelRestore(info.socket);
 	});
 
 	function tokenizeSshArgs(input: string): string[] {
