@@ -63,8 +63,11 @@ login session. This is separate from any ControlMaster socket your own terminal
 
 `/ssh doctor` is read-only diagnostics for that boundary. It reports global
 `Host *` ControlMaster settings in `~/.ssh/config`, explains that terminal ssh
-masters are independent of pi's private `/tmp/pi-ssh-*.sock` sockets, checks
-which pi sockets are live/dead, and shows the current shell/env-stale state.
+masters are independent of pi's private `/tmp/pi-ssh-*.sock` sockets, runs
+`ssh -G` to show the resolved terminal `ControlPath`, checks whether that
+user-side master and pi's private sockets are live/dead, prints the exact
+`ssh -O exit ...` command to refresh the terminal master, and shows the current
+shell/env-stale state. It never edits config and never closes sockets.
 
 ### Dashboard (`/ssh` with no args)
 
@@ -87,7 +90,7 @@ Free-form connect strings and `cd` targets prefill the editor with `/ssh …`.
 same one-call situational picture as the dashboard after reconnecting or taking
 over a long-running session:
 
-- connection + saved profiles
+- connection + pi ControlMaster socket state + saved profiles
 - remote processes (running/finished, pid/exit, age)
 - active monitors and notification policies
 - open tunnels

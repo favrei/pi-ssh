@@ -5,6 +5,7 @@
 import { Type } from "typebox";
 import type { SshContext } from "../context";
 import { formatSshSitrep } from "../sitrep";
+import { checkPiControlMaster } from "../doctor";
 
 export function setupConnectionTools(ssh: SshContext): void {
 	const { pi, getTarget, switchTarget, disconnect, refreshStatus, connectedText, profileNames, render } = ssh;
@@ -66,10 +67,11 @@ export function setupConnectionTools(ssh: SshContext): void {
 			if (!t) return { content: [{ type: "text" as const, text: "SSH: not connected" }], details: undefined };
 			if (params.verbose) return { content: [{ type: "text" as const, text: await formatSshSitrep(ssh, t) }], details: undefined };
 			const base = connectedText(t);
+			const masterLine = `\npi ControlMaster: ${await checkPiControlMaster(t)} (${t.socket})`;
 			let profiles: string[] = [];
 			try { profiles = profileNames(); } catch { /* corrupt profiles file: ignore for status */ }
 			const profileLine = profiles.length ? `\nSaved profiles (reconnect with ssh_connect '@name'): ${profiles.map((n) => `@${n}`).join(", ")}` : "";
-			return { content: [{ type: "text" as const, text: base + profileLine }], details: undefined };
+			return { content: [{ type: "text" as const, text: base + masterLine + profileLine }], details: undefined };
 		},
 	});
 }

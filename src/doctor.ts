@@ -8,6 +8,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SshTarget } from "./types";
 import { checkControlSocket, listPiSshSockets } from "./ssh/sweep";
+import { runSsh, sshFailureMessage } from "./ssh/transport";
+import { shQuote } from "./utils";
 
 export interface IncludeDirective {
 	line: number;
@@ -51,9 +53,26 @@ export interface DoctorSocket {
 	error?: string;
 }
 
+export interface ResolvedSshConfig {
+	user?: string;
+	hostname?: string;
+	port?: string;
+	controlMaster?: string;
+	controlPath?: string;
+	controlPersist?: string;
+}
+
+export interface UserControlMasterReport {
+	config?: ResolvedSshConfig;
+	state: "live" | "dead" | "not-configured" | "error";
+	exitCommand: string;
+	error?: string;
+}
+
 export interface DoctorReport {
 	config: LocalSshConfigReport;
 	sockets: DoctorSocket[];
+	userControlMaster?: UserControlMasterReport;
 	target?: SshTarget | null;
 }
 
@@ -74,6 +93,14 @@ function activeControlMaster(value: string | undefined): boolean {
 	if (!value) return false;
 	const normalized = value.toLowerCase();
 	return normalized !== "no" && normalized !== "false" && normalized !== "none";
+}
+
+function commandArg(value: string): string {
+	return /^[A-Za-z0-9_./:@%+=,-]+$/.test(value) ? value : shQuote(value);
+}
+
+export function formatSshExitCommand(t: SshTarget): string {
+	return ["ssh", "-O", "exit", ...t.sshOptions, t.remote].map(commandArg).join(" ");
 }
 
 export function parseControlMasterBlocks(configText: string): ParsedControlMasterConfig {
@@ -140,6 +167,55 @@ export function globalControlMasterBlocks(config: ParsedControlMasterConfig): Co
 	});
 }
 
+export function parseSshGOutput(stdout: string): ResolvedSshConfig {
+	const config: ResolvedSshConfig = {};
+	for (const line of stdout.split(/\r?\n/)) {
+		const match = line.match(/^(\S+)\s+(.*)$/);
+		if (!match) continue;
+		const key = match[1].toLowerCase();
+		const value = match[2].trim();
+		if (key === "user") config.user = value;
+		else if (key === "hostname") config.hostname = value;
+		else if (key === "port") config.port = value;
+		else if (key === "controlmaster") config.controlMaster = value;
+		else if (key === "controlpath") config.controlPath = value;
+		else if (key === "controlpersist") config.controlPersist = value;
+	}
+	return config;
+}
+
+export async function inspectUserControlMaster(
+	t: SshTarget,
+	opts: {
+		runSshG?: () => Promise<{ code: number | null; stdout: Buffer; stderr: Buffer; timedOut: boolean; signal: NodeJS.Signals | null }>;
+		checkFn?: (socket: string) => Promise<boolean>;
+	} = {},
+): Promise<UserControlMasterReport> {
+	const exitCommand = formatSshExitCommand(t);
+	const runSshG = opts.runSshG ?? (() => runSsh(["-G", ...t.sshOptions, "--", t.remote], { timeout: 10 }));
+	const checkFn = opts.checkFn ?? checkControlSocket;
+	let resolved: ResolvedSshConfig;
+	try {
+		const r = await runSshG();
+		if (r.code !== 0 || r.timedOut || r.signal) {
+			return { state: "error", exitCommand, error: `${sshFailureMessage(r)}: ${r.stderr.toString().trim() || r.stdout.toString().trim()}` };
+		}
+		resolved = parseSshGOutput(r.stdout.toString());
+	} catch (e) {
+		return { state: "error", exitCommand, error: e instanceof Error ? e.message : String(e) };
+	}
+	const controlPath = resolved.controlPath;
+	if (!activeControlMaster(resolved.controlMaster) || !controlPath || controlPath === "none") {
+		return { config: resolved, state: "not-configured", exitCommand };
+	}
+	try {
+		const live = await checkFn(controlPath);
+		return { config: resolved, state: live ? "live" : "dead", exitCommand };
+	} catch (e) {
+		return { config: resolved, state: "error", exitCommand, error: e instanceof Error ? e.message : String(e) };
+	}
+}
+
 export async function readLocalSshConfig(configPath = defaultSshConfigPath()): Promise<LocalSshConfigReport> {
 	try {
 		const raw = await readFile(configPath, "utf8");
@@ -200,6 +276,14 @@ export async function inspectPiSockets(currentSocket?: string): Promise<DoctorSo
 	return [...missingCurrent, ...checked];
 }
 
+export async function checkPiControlMaster(t: SshTarget): Promise<DoctorSocket["state"]> {
+	try {
+		return await checkControlSocket(t.socket) ? "live" : "dead";
+	} catch {
+		return "error";
+	}
+}
+
 function formatBlock(block: ControlMasterBlock): string {
 	const selector = block.kind === "global" ? "global preamble" : `${block.kind === "host" ? "Host" : "Match"} ${block.selector}`;
 	const parts = [
@@ -211,7 +295,7 @@ function formatBlock(block: ControlMasterBlock): string {
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
-	const { config, sockets, target } = report;
+	const { config, sockets, target, userControlMaster } = report;
 	const lines: string[] = ["SSH doctor"];
 	lines.push(target ? `Connection: ${target.remote}:${target.remoteCwd}` : "Connection: not connected");
 	if (target) {
@@ -231,7 +315,7 @@ export function formatDoctorReport(report: DoctorReport): string {
 			lines.push("  Global ControlMaster: detected");
 			for (const block of globals) lines.push(`  - ${formatBlock(block)}`);
 			lines.push("  Your terminal ssh may reuse its own ControlMaster socket independently of pi.");
-			if (target) lines.push(`  To refresh that separate terminal master, run: ssh -O exit ${target.remote}`);
+			if (target) lines.push("  See the resolved ssh -G section below for the exact terminal master refresh command.");
 			lines.push("  pi uses private /tmp/pi-ssh-*.sock sockets and never writes ~/.ssh/config.");
 		} else {
 			lines.push("  Global ControlMaster: not detected in this file.");
@@ -243,6 +327,28 @@ export function formatDoctorReport(report: DoctorReport): string {
 		}
 		if (config.includes.length) {
 			lines.push(`  Include directives not followed: ${config.includes.map((inc) => `line ${inc.line} ${inc.value}`).join("; ")}`);
+		}
+	}
+
+	lines.push("");
+	lines.push("Resolved terminal SSH mux (ssh -G):");
+	if (!target) {
+		lines.push("  not checked; not connected.");
+	} else if (!userControlMaster) {
+		lines.push("  not checked.");
+	} else if (!userControlMaster.config) {
+		lines.push(`  ssh -G failed: ${userControlMaster.error ?? "unknown error"}`);
+		lines.push(`  Refresh command if a terminal master exists: ${userControlMaster.exitCommand}`);
+	} else {
+		const cfg = userControlMaster.config;
+		lines.push(`  user=${cfg.user ?? "-"} hostname=${cfg.hostname ?? "-"} port=${cfg.port ?? "-"}`);
+		lines.push(`  ControlMaster=${cfg.controlMaster ?? "-"} ControlPath=${cfg.controlPath ?? "-"} ControlPersist=${cfg.controlPersist ?? "-"}`);
+		if (userControlMaster.state === "not-configured") {
+			lines.push("  No user-side ControlMaster is enabled for this target.");
+		} else {
+			const extra = userControlMaster.error ? ` (${userControlMaster.error})` : "";
+			lines.push(`  User-side master: ${userControlMaster.state}${extra}`);
+			lines.push(`  Refresh command: ${userControlMaster.exitCommand}`);
 		}
 	}
 
@@ -261,9 +367,10 @@ export function formatDoctorReport(report: DoctorReport): string {
 }
 
 export async function runSshDoctor(target?: SshTarget | null): Promise<string> {
-	const [config, sockets] = await Promise.all([
+	const [config, sockets, userControlMaster] = await Promise.all([
 		readLocalSshConfig(),
 		inspectPiSockets(target?.socket),
+		target ? inspectUserControlMaster(target) : Promise.resolve(undefined),
 	]);
-	return formatDoctorReport({ config, sockets, target });
+	return formatDoctorReport({ config, sockets, userControlMaster, target });
 }
