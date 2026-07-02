@@ -15,6 +15,8 @@ export interface SshTarget {
 	shellStartupStderr?: string;
 	/** True after editing a file that affects login-time shell/PAM environment. */
 	loginEnvDirty?: boolean;
+	/** True when local ~/.ssh/config has a global ControlMaster block. */
+	localControlMasterDetected?: boolean;
 	/** Shell prefix applied before every ssh_bash / ssh_process command (e.g. venv activation). */
 	defaultCommandPrefix?: string;
 	/** Environment exported before every ssh_bash / ssh_process command. */

@@ -66,6 +66,7 @@ import { setupMonitorTool } from "./tools/monitor";
 import { setupTransferTools } from "./tools/transfer";
 import { setupHooks } from "./hooks";
 import { setupDashboard } from "./dashboard";
+import { detectLocalGlobalControlMaster } from "./doctor";
 import { createPollerManager } from "./poller";
 import { createMonitorManager } from "./monitor";
 import {
@@ -154,6 +155,10 @@ export default function (pi: ExtensionAPI) {
 		if (!target.loginEnvDirty) return;
 		target.loginEnvDirty = false;
 		refreshStatus(null);
+	}
+
+	function annotateLocalSshConfig(t: SshTarget): void {
+		t.localControlMasterDetected = detectLocalGlobalControlMaster().hasGlobalControlMaster;
 	}
 
 	let tunnelRestoreTimer: NodeJS.Timeout | null = null;
@@ -368,6 +373,7 @@ export default function (pi: ExtensionAPI) {
 		const expanded = expandProfile(arg);
 		const { remote, path, sshOptions, activation, shellMode } = parseConnectArg(expanded);
 		const t = await resolveTarget(remote, path, sshOptions, activation, shellMode);
+		annotateLocalSshConfig(t);
 		t.originArg = expanded.trim();
 		return t;
 	}
@@ -386,6 +392,7 @@ export default function (pi: ExtensionAPI) {
 		let next: SshTarget;
 		try {
 			next = await resolveTarget(parsed.remote, parsed.path, parsed.sshOptions, parsed.activation, parsed.shellMode);
+			annotateLocalSshConfig(next);
 		} catch (e) {
 			if (fresh && prev) {
 				// Keep the previous logical connection. Its mux was closed above, so warm
@@ -441,6 +448,7 @@ export default function (pi: ExtensionAPI) {
 		const lines = [`SSH connected: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3; ssh_edit uses fallback)"}`];
 		lines.push(`  shell: ${t.shellKind} (${t.loginShell})${t.shellNote ? ` - ${t.shellNote}` : ""}`);
 		if (t.loginEnvDirty) lines.push("  login env: stale; run /ssh reconnect or ssh_connect fresh:true");
+		if (t.localControlMasterDetected) lines.push("  local ssh config: global ControlMaster detected; run /ssh doctor");
 		if (t.defaultCommandPrefix) lines.push(`  activation (every ssh_bash/ssh_process): ${t.defaultCommandPrefix}`);
 		if (t.defaultEnv && Object.keys(t.defaultEnv).length) lines.push(`  env: ${Object.keys(t.defaultEnv).join(", ")}`);
 		const activeTunnels = ctx.tunnels?.list?.() ?? [];

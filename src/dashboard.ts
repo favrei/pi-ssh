@@ -9,6 +9,7 @@ import { formatDuration, shQuote } from "./utils";
 import { runRemoteCommand, sshFailureMessage } from "./ssh/transport";
 import { createRemoteBashOps } from "./remote-ops";
 import { buildClearCommand, buildKillCommand, listProcesses, type ProcRow, processRoot } from "./process-queries";
+import { runSshDoctor } from "./doctor";
 
 export function setupDashboard(ctx: SshContext): void {
 	const {
@@ -147,6 +148,7 @@ Manage:
 			push(`  ${T.fg("success", "\u25cf")} ${T.fg("text", "connected")}  ${T.fg("accent", `${t.remote} : ${t.remoteCwd}`)}${t.hasPython ? "" : T.fg("warning", "  (no python3)")}`);
 			push(`    ${T.fg("dim", "shell")}  ${T.fg("muted", `${t.shellKind} (${t.loginShell})${t.shellNote ? ` - ${t.shellNote}` : ""}`)}`);
 			if (t.loginEnvDirty) push(`    ${T.fg("dim", "login env")}  ${T.fg("warning", "stale; run /ssh reconnect")}`);
+			if (t.localControlMasterDetected) push(`    ${T.fg("dim", "local ssh")}  ${T.fg("warning", "global ControlMaster; run /ssh doctor")}`);
 			if (t.defaultCommandPrefix) push(`    ${T.fg("dim", "\u26a1")} ${T.fg("muted", t.defaultCommandPrefix)}`);
 			if (t.defaultEnv && Object.keys(t.defaultEnv).length) push(`    ${T.fg("dim", "env")}  ${T.fg("muted", Object.keys(t.defaultEnv).join(", "))}`);
 			const activeTunnels = ctx.tunnels.list();
@@ -432,7 +434,7 @@ Manage:
 
 	// --- runtime connect/disconnect/status ---
 	pi.registerCommand("ssh", {
-		description: "SSH remote dashboard/connect. Subcommands: status, reconnect, cd, save, profiles, help monitor, off.",
+		description: "SSH remote dashboard/connect. Subcommands: status, doctor, reconnect, cd, save, profiles, help monitor, off.",
 		handler: async (args, cmdCtx) => {
 			const arg = args.trim();
 
@@ -444,6 +446,11 @@ Manage:
 			if (arg === "status") {
 				const t = getTarget();
 				cmdCtx.ui.notify(t ? connectedText(t) : "SSH: not connected", "info");
+				return;
+			}
+
+			if (arg === "doctor") {
+				cmdCtx.ui.notify(await runSshDoctor(getTarget()), "info");
 				return;
 			}
 

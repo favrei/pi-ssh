@@ -29,6 +29,7 @@ enables the efficient in-place `ssh_edit`.
 /ssh --fresh root@host                            # hard reconnect: fresh login session
 /ssh reconnect                                    # hard reconnect the current target
 /ssh status                                       # print current connection status
+/ssh doctor                                       # diagnose local SSH mux config and pi sockets
 /ssh cd subdir/or/abs/path                        # move remote cwd (no reconnect)
 /ssh profiles                                     # list saved profiles
 /ssh off                                          # disconnect
@@ -52,6 +53,18 @@ command, so `ssh_bash` still has bash parsing semantics while inheriting zsh-set
 PATH/env. Use `--shell bash` as an escape hatch when remote zsh startup is noisy
 or slow, or `--shell zsh` to force the zsh bootstrap. Remote paths beginning with
 `~` resolve against the detected remote home.
+
+If you edit files that affect login-time environment (`~/.zshrc`, `~/.profile`,
+`.ssh/environment`, `/etc/profile.d/*`, etc.), `ssh_write`, `ssh_secret_write`,
+and `ssh_edit` mark the connection as `env stale` and append a reconnect hint.
+Run `/ssh reconnect` or `ssh_connect fresh:true` after the edit to refresh pi's
+login session. This is separate from any ControlMaster socket your own terminal
+`ssh` may hold.
+
+`/ssh doctor` is read-only diagnostics for that boundary. It reports global
+`Host *` ControlMaster settings in `~/.ssh/config`, explains that terminal ssh
+masters are independent of pi's private `/tmp/pi-ssh-*.sock` sockets, checks
+which pi sockets are live/dead, and shows the current shell/env-stale state.
 
 ### Dashboard (`/ssh` with no args)
 
