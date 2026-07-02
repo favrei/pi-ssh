@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { SshContext } from "./context";
+import { startStaleSocketSweep } from "./ssh/sweep";
 
 export function setupHooks(ctx: SshContext): void {
 	const { pi, switchTarget, connectedText, refreshStatus, disconnect, getTarget } = ctx;
@@ -19,6 +20,7 @@ export function setupHooks(ctx: SshContext): void {
 			}
 		}
 		refreshStatus(toolCtx);
+		startStaleSocketSweep(getTarget()?.socket);
 	});
 
 	// --- teardown ---
