@@ -76,7 +76,7 @@ export function createSyncManager(ctx: SshContext): SyncManager {
 	): Promise<{ localSource: string; remoteDest: string; debounceMs: number; initialTail: string }> {
 		stop();
 		const localSource = ensureTrailingSlash(resolve(localCwd, params.localPath ?? "."));
-		const remoteDest = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd) : t.remoteCwd);
+		const remoteDest = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd);
 		// Initial full sync so the remote starts in lockstep.
 		const initial = await runRsyncTransfer(localCwd, t, localSource, `${t.remote}:${remoteDest}`, { delete: params.delete, excludes: params.excludes, gitignore: true }, undefined);
 		const debounceMs = Math.max(50, Math.floor(params.debounceMs ?? 400));

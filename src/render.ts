@@ -33,7 +33,7 @@ export function createRender(getTarget: () => SshTarget | null, localCwd: string
 		const t = getTarget();
 		if (!t) return raw;
 		try {
-			const rp = toRemotePath(raw, localCwd, t.remoteCwd);
+			const rp = toRemotePath(raw, localCwd, t.remoteCwd, t.remoteHome);
 			const base = stripTrailingSlash(t.remoteCwd);
 			if (rp === base) return ".";
 			if (rp.startsWith(`${base}/`)) return rp.slice(base.length + 1);

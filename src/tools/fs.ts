@@ -180,7 +180,7 @@ export function setupFsTools(ssh: SshContext): void {
 			if (params.appendNewline) value = Buffer.concat([value, Buffer.from("\n")]);
 			const mode = params.mode?.trim() || "600";
 			if (!/^[0-7]{3,4}$/.test(mode)) throw new Error(`Invalid octal mode: ${mode}`);
-			const remotePath = toRemotePath(params.remotePath, localCwd, t.remoteCwd);
+			const remotePath = toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome);
 			const q = shQuote(remotePath);
 			// umask 077 makes the create restrictive from the first byte; chmod sets the
 			// final mode. The secret arrives only on stdin, never in argv.
@@ -209,7 +209,7 @@ export function setupFsTools(ssh: SshContext): void {
 		},
 		async execute(id, params: { path: string; edits: Array<{ oldText: string; newText: string }> }, signal, onUpdate) {
 			const t = requireTarget();
-			const remotePath = toRemotePath(params.path, localCwd, t.remoteCwd);
+			const remotePath = toRemotePath(params.path, localCwd, t.remoteCwd, t.remoteHome);
 
 			if (t.hasPython) {
 				try {

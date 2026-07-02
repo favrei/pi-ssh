@@ -13,7 +13,7 @@ export function setupConnectionTools(ssh: SshContext): void {
 	pi.registerTool({
 		name: "ssh_connect",
 		label: "ssh_connect",
-		description: "Connect, reconnect, or switch the active SSH remote for ssh_* tools. Same target syntax as /ssh; supports --activate, repeated --env, and fresh hard reconnects.",
+		description: "Connect, reconnect, or switch the active SSH remote for ssh_* tools. Same target syntax as /ssh; supports --activate, repeated --env, --shell, and fresh hard reconnects.",
 		promptSnippet: "Connect or switch the active SSH remote used by ssh_* tools",
 		promptGuidelines: [
 			"Use ssh_connect when the user asks to connect, disconnect, or switch SSH servers.",
@@ -21,7 +21,7 @@ export function setupConnectionTools(ssh: SshContext): void {
 			"After connecting, use ssh_* tools for remote operations and local tools for local work.",
 		],
 		parameters: Type.Object({
-			target: Type.String({ description: "SSH target: user@host[:/abs/path], ssh options, @profile, plus optional --activate/--env/--fresh" }),
+			target: Type.String({ description: "SSH target: user@host[:/abs/path], ssh options, @profile, plus optional --activate/--env/--shell/--fresh" }),
 			fresh: Type.Optional(Type.Boolean({ description: "Close the current pi-owned ControlMaster and remove its socket before connecting, forcing a new remote login session." })),
 		}),
 		renderCall(args: any, theme: any, context: any) {

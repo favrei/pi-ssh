@@ -56,8 +56,17 @@ export async function withFileLock<T>(key: string, fn: () => Promise<T>): Promis
 	}
 }
 
-export function toRemotePath(path: string, localCwd: string, remoteCwd: string): string {
+export function toRemotePath(path: string, localCwd: string, remoteCwd: string, remoteHome?: string): string {
 	const normalizedRemoteCwd = stripTrailingSlash(remoteCwd);
+	if (path === "~" || path.startsWith("~/")) {
+		if (!remoteHome) throw new Error(`SSH path mapping needs remote home for path: ${path}`);
+		const home = stripTrailingSlash(remoteHome);
+		const suffix = path === "~" ? "" : path.slice(1);
+		return posix.normalize(`${home}${suffix}`);
+	}
+	if (/^~[^/]/.test(path)) {
+		throw new Error(`SSH path mapping does not support other users' homes: ${path}`);
+	}
 	if (path === normalizedRemoteCwd || path.startsWith(`${normalizedRemoteCwd}/`)) {
 		const normalizedPath = posix.normalize(path);
 		if (normalizedPath === normalizedRemoteCwd || normalizedPath.startsWith(`${normalizedRemoteCwd}/`)) {

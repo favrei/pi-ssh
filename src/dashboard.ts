@@ -145,6 +145,7 @@ Manage:
 			}
 			push("");
 			push(`  ${T.fg("success", "\u25cf")} ${T.fg("text", "connected")}  ${T.fg("accent", `${t.remote} : ${t.remoteCwd}`)}${t.hasPython ? "" : T.fg("warning", "  (no python3)")}`);
+			push(`    ${T.fg("dim", "shell")}  ${T.fg("muted", `${t.shellKind} (${t.loginShell})${t.shellNote ? ` - ${t.shellNote}` : ""}`)}`);
 			if (t.defaultCommandPrefix) push(`    ${T.fg("dim", "\u26a1")} ${T.fg("muted", t.defaultCommandPrefix)}`);
 			if (t.defaultEnv && Object.keys(t.defaultEnv).length) push(`    ${T.fg("dim", "env")}  ${T.fg("muted", Object.keys(t.defaultEnv).join(", "))}`);
 			const activeTunnels = ctx.tunnels.list();

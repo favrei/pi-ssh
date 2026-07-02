@@ -107,7 +107,7 @@ export function processRunScript(
 	},
 	localCwd: string,
 ): string {
-	const cwd = params.cwd?.trim() ? toRemotePath(params.cwd, localCwd, t.remoteCwd) : t.remoteCwd;
+	const cwd = params.cwd?.trim() ? toRemotePath(params.cwd, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd;
 	const lines = [
 		"#!/usr/bin/env bash",
 		// Resolve the process dir (where run.sh lives) so we can record the exit code there.

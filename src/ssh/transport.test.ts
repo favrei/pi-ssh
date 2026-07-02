@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createCloseGuard, isTransportSuccessAfterRetry } from "./transport";
+import { createCloseGuard, isTransportSuccessAfterRetry, wrapForShell } from "./transport";
 import type { RunResult } from "../types";
 
 test("createCloseGuard merges in-flight closes for the same socket", async () => {
@@ -57,4 +57,12 @@ test("isTransportSuccessAfterRetry distinguishes command failure from transport 
 	assert.equal(isTransportSuccessAfterRetry(result({ code: 255, stderr: Buffer.from("mux_client_request_session failed") })), false);
 	assert.equal(isTransportSuccessAfterRetry(result({ timedOut: true })), false);
 	assert.equal(isTransportSuccessAfterRetry(result({ signal: "SIGTERM" })), false);
+});
+
+test("wrapForShell keeps bash parsing under zsh login startup", () => {
+	assert.equal(wrapForShell("bash", true, "echo hi"), "bash -lc 'echo hi'");
+	assert.equal(wrapForShell("other", true, "echo hi"), "bash -lc 'echo hi'");
+	assert.equal(wrapForShell("bash", false, "echo hi"), "bash -c 'echo hi'");
+	assert.equal(wrapForShell("zsh", true, "echo hi"), "zsh -ilc 'exec bash -c '\\''echo hi'\\'''");
+	assert.match(wrapForShell("zsh", true, "printf '%s\\n' hi"), /^zsh -ilc 'exec bash -c /);
 });

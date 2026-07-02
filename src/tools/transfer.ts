@@ -35,7 +35,7 @@ export function setupTransferTools(ssh: SshContext): void {
 		async execute(_id, params: { localPath?: string; remotePath?: string; delete?: boolean; dryRun?: boolean; excludes?: string[]; verbose?: boolean }, signal, onUpdate) {
 			const t = requireTarget();
 			const localSource = ensureTrailingSlash(resolve(localCwd, params.localPath ?? "."));
-			const remoteDest = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd) : t.remoteCwd);
+			const remoteDest = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd);
 			const verbose = params.verbose ?? false;
 			const fallback = `Pushed ${localSource} -> ${t.remote}:${remoteDest}`;
 			const { stdout, elapsedMs } = await runRsyncTransfer(
@@ -74,7 +74,7 @@ export function setupTransferTools(ssh: SshContext): void {
 		},
 		async execute(_id, params: { remotePath?: string; localPath?: string; delete?: boolean; dryRun?: boolean; excludes?: string[]; verbose?: boolean }, signal, onUpdate) {
 			const t = requireTarget();
-			const remoteSource = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd) : t.remoteCwd);
+			const remoteSource = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd);
 			const localDest = ensureTrailingSlash(resolve(localCwd, params.localPath ?? "."));
 			const verbose = params.verbose ?? false;
 			const fallback = `Pulled ${t.remote}:${remoteSource} -> ${localDest}`;

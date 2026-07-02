@@ -25,6 +25,7 @@ enables the efficient in-place `ssh_edit`.
 ```
 /ssh -i /path/key.pem root@host:/abs/work        # connect, set remote cwd
 /ssh root@host                                    # use remote pwd as cwd
+/ssh --shell bash root@host                       # force bash -lc instead of auto shell detection
 /ssh --fresh root@host                            # hard reconnect: fresh login session
 /ssh reconnect                                    # hard reconnect the current target
 /ssh status                                       # print current connection status
@@ -44,6 +45,13 @@ because tunnels, process polling, sync, and low-latency commands rely on its
 managed mux; hard reconnect refreshes login state without disabling muxing. pi
 uses a private random `ControlPath` per active connection; if a manual shell
 `ssh` is stale, close that separate master with `ssh -O exit <host>`.
+
+By default, pi detects the remote login shell. For zsh users it starts `zsh -ilc`
+only to load login/interactive startup files, then `exec`s bash to run the actual
+command, so `ssh_bash` still has bash parsing semantics while inheriting zsh-set
+PATH/env. Use `--shell bash` as an escape hatch when remote zsh startup is noisy
+or slow, or `--shell zsh` to force the zsh bootstrap. Remote paths beginning with
+`~` resolve against the detected remote home.
 
 ### Dashboard (`/ssh` with no args)
 

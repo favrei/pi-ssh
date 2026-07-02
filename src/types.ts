@@ -5,9 +5,14 @@
 export interface SshTarget {
 	remote: string;
 	remoteCwd: string;
+	remoteHome: string;
 	socket: string;
 	hasPython: boolean;
 	sshOptions: string[];
+	loginShell: string;
+	shellKind: ShellKind;
+	shellNote?: string;
+	shellStartupStderr?: string;
 	/** Shell prefix applied before every ssh_bash / ssh_process command (e.g. venv activation). */
 	defaultCommandPrefix?: string;
 	/** Environment exported before every ssh_bash / ssh_process command. */
@@ -15,6 +20,9 @@ export interface SshTarget {
 	/** Resolved /ssh argument string used to open this connection (for `/ssh save`). */
 	originArg?: string;
 }
+
+export type ShellKind = "bash" | "zsh" | "other";
+export type ShellMode = "auto" | "bash" | "zsh";
 
 // logWatches param shape on ssh_process. Each logWatch is desugared into a
 // first-class standalone monitor at start (src/monitor.ts createForProcess).

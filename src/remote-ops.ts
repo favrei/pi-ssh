@@ -27,7 +27,7 @@ import {
 } from "./ssh/transport";
 
 export function createRemoteReadOps(t: SshTarget, localCwd: string): ReadOperations {
-	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd);
+	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd, t.remoteHome);
 	return {
 		readFile: (p) => sshExec(t, `cat -- ${shQuote(toRemote(p))}`),
 		access: async (p) => {
@@ -54,7 +54,7 @@ export function createRemoteReadOps(t: SshTarget, localCwd: string): ReadOperati
 }
 
 export function createRemoteWriteOps(t: SshTarget, localCwd: string, lockWrites = true): WriteOperations {
-	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd);
+	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd, t.remoteHome);
 	return {
 		writeFile: async (p, content) => {
 			const remotePath = toRemote(p);
@@ -84,7 +84,7 @@ export function createRemoteEditOps(t: SshTarget, localCwd: string, lockWrites =
 }
 
 export function createRemoteLsOps(t: SshTarget, localCwd: string): LsOperations {
-	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd);
+	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd, t.remoteHome);
 	return {
 		exists: async (p) => {
 			const r = await runRemoteCommand(t, `test -e ${shQuote(toRemote(p))}`);
@@ -104,7 +104,7 @@ export function createRemoteLsOps(t: SshTarget, localCwd: string): LsOperations 
 }
 
 export function createRemoteFindOps(t: SshTarget, localCwd: string): FindOperations {
-	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd);
+	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd, t.remoteHome);
 	return {
 		exists: async (p) => {
 			const r = await runRemoteCommand(t, `test -e ${shQuote(toRemote(p))}`);
@@ -160,7 +160,7 @@ export async function runRemoteGrep(
 	params: { pattern: string; path?: string; glob?: string; ignoreCase?: boolean; literal?: boolean; context?: number; limit?: number },
 	signal?: AbortSignal,
 ): Promise<{ text: string; details?: Record<string, unknown> }> {
-	const searchPath = toRemotePath(params.path || ".", localCwd, t.remoteCwd);
+	const searchPath = toRemotePath(params.path || ".", localCwd, t.remoteCwd, t.remoteHome);
 	const limit = Math.max(1, Math.floor(params.limit ?? 100));
 	const rgArgs = ["--line-number", "--color=never", "--hidden", "--no-heading", "--glob", "!.git/**", "--glob", "!node_modules/**"];
 	if (params.ignoreCase) rgArgs.push("--ignore-case");
@@ -188,7 +188,7 @@ export async function runRemoteGrep(
 }
 
 export function createRemoteBashOps(t: SshTarget, localCwd: string, opts?: { tty?: boolean }): BashOperations {
-	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd);
+	const toRemote = (p: string) => toRemotePath(p, localCwd, t.remoteCwd, t.remoteHome);
 	// -tt must precede the destination in ssh args, so we splice it into the
 	// options segment rather than appending after sshConnArgs.
 	const connArgs = opts?.tty ? [...t.sshOptions, "-tt", ...baseSshOptions(t.socket), "--", t.remote] : sshConnArgs(t);
@@ -202,7 +202,7 @@ export function createRemoteBashOps(t: SshTarget, localCwd: string, opts?: { tty
 						reject(new Error("aborted"));
 						return;
 					}
-					const child = spawn("ssh", [...connArgs, remoteShell(cmd)], { stdio: ["ignore", "pipe", "pipe"] });
+					const child = spawn("ssh", [...connArgs, remoteShell(t, cmd)], { stdio: ["ignore", "pipe", "pipe"] });
 					const out: Buffer[] = [];
 					const err: Buffer[] = [];
 					let timedOut = false;

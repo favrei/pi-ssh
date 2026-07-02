@@ -4,7 +4,7 @@
 
 import { spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
-import type { RunOptions, RunResult, SshTarget } from "../types";
+import type { RunOptions, RunResult, ShellKind, SshTarget } from "../types";
 import { shQuote } from "../utils";
 import {
 	abortableSleep,
@@ -95,8 +95,14 @@ export function sshConnArgs(t: SshTarget): string[] {
 	return [...t.sshOptions, ...baseSshOptions(t.socket), "--", t.remote];
 }
 
-export function remoteShell(command: string, login = true): string {
-	return `bash ${login ? "-lc" : "-c"} ${shQuote(command)}`;
+export function wrapForShell(kind: ShellKind, login: boolean, command: string): string {
+	if (!login) return `bash -c ${shQuote(command)}`;
+	if (kind === "zsh") return `zsh -ilc ${shQuote(`exec bash -c ${shQuote(command)}`)}`;
+	return `bash -lc ${shQuote(command)}`;
+}
+
+export function remoteShell(t: SshTarget, command: string, login = true): string {
+	return wrapForShell(t.shellKind, login, command);
 }
 
 export function sshFailureMessage(r: RunResult): string {
@@ -132,7 +138,7 @@ export function isTransportSuccessAfterRetry(r: RunResult): boolean {
 }
 
 export async function runRemoteCommand(t: SshTarget, command: string, opts?: RunOptions): Promise<RunResult> {
-	const shell = remoteShell(command, opts?.login !== false);
+	const shell = remoteShell(t, command, opts?.login !== false);
 	const reconnect = opts?.reconnect ?? reconnectCtx.getStore()?.reconnect ?? false;
 	const maxAttempts = reconnect ? RECONNECT_MAX_ATTEMPTS : 2; // 2 => historical retry-once
 	let r = await runSsh([...sshConnArgs(t), shell], opts);

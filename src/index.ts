@@ -48,7 +48,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import type { Activation, SshTarget } from "./types";
+import type { Activation, ShellMode, SshTarget } from "./types";
 import { buildEnvExports, shQuote, toRemotePath } from "./utils";
 import { setReconnectNotifier } from "./ssh/reconnect";
 import { closeMaster, runRemoteCommand, setMasterRecycledNotifier } from "./ssh/transport";
@@ -234,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 		return tokens;
 	}
 
-	function parseConnectArg(arg: string): { remote: string; path?: string; sshOptions: string[]; activation: Activation; fresh: boolean } {
+	function parseConnectArg(arg: string): { remote: string; path?: string; sshOptions: string[]; activation: Activation; fresh: boolean; shellMode: ShellMode } {
 		const tokens = tokenizeSshArgs(arg);
 		if (tokens[0] === "ssh") tokens.shift();
 		if (tokens.length === 0) throw new Error("Missing SSH destination");
@@ -244,6 +244,7 @@ export default function (pi: ExtensionAPI) {
 		// login session while keeping ControlMaster enabled for normal extension use.
 		let commandPrefix: string | undefined;
 		let fresh = false;
+		let shellMode: ShellMode = "auto";
 		const env: Record<string, string> = {};
 		const rest: string[] = [];
 		for (let i = 0; i < tokens.length; i++) {
@@ -254,6 +255,12 @@ export default function (pi: ExtensionAPI) {
 			}
 			if (tk === "--no-controlmaster" || tk === "--no-control-master") {
 				throw new Error("--no-controlmaster is not supported: pi SSH uses ControlMaster for tunnels, process polling, sync, and low-latency tools. Use --fresh/--hard to force a new login session while keeping multiplexing enabled.");
+			}
+			if (tk === "--shell" || tk.startsWith("--shell=")) {
+				const value = tk.startsWith("--shell=") ? tk.slice("--shell=".length) : tokens[++i];
+				if (value !== "auto" && value !== "bash" && value !== "zsh") throw new Error(`--shell expects auto, bash, or zsh; got: ${value ?? ""}`);
+				shellMode = value;
+				continue;
 			}
 			if (tk === "--activate") {
 				commandPrefix = tokens[++i];
@@ -293,9 +300,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		const match = destination.match(/^(.+):(\/.*)$/);
 		if (!match) {
-			return { remote: destination, sshOptions, activation, fresh };
+			return { remote: destination, sshOptions, activation, fresh, shellMode };
 		}
-		return { remote: match[1], path: match[2], sshOptions, activation, fresh };
+		return { remote: match[1], path: match[2], sshOptions, activation, fresh, shellMode };
 	}
 
 	// --- connection profiles (~/.pi/ssh-profiles.json) ---
@@ -349,8 +356,8 @@ export default function (pi: ExtensionAPI) {
 
 	async function connect(arg: string): Promise<SshTarget> {
 		const expanded = expandProfile(arg);
-		const { remote, path, sshOptions, activation } = parseConnectArg(expanded);
-		const t = await resolveTarget(remote, path, sshOptions, activation);
+		const { remote, path, sshOptions, activation, shellMode } = parseConnectArg(expanded);
+		const t = await resolveTarget(remote, path, sshOptions, activation, shellMode);
 		t.originArg = expanded.trim();
 		return t;
 	}
@@ -368,7 +375,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		let next: SshTarget;
 		try {
-			next = await resolveTarget(parsed.remote, parsed.path, parsed.sshOptions, parsed.activation);
+			next = await resolveTarget(parsed.remote, parsed.path, parsed.sshOptions, parsed.activation, parsed.shellMode);
 		} catch (e) {
 			if (fresh && prev) {
 				// Keep the previous logical connection. Its mux was closed above, so warm
@@ -422,6 +429,7 @@ export default function (pi: ExtensionAPI) {
 
 	function connectedText(t: SshTarget): string {
 		const lines = [`SSH connected: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3; ssh_edit uses fallback)"}`];
+		lines.push(`  shell: ${t.shellKind} (${t.loginShell})${t.shellNote ? ` - ${t.shellNote}` : ""}`);
 		if (t.defaultCommandPrefix) lines.push(`  activation (every ssh_bash/ssh_process): ${t.defaultCommandPrefix}`);
 		if (t.defaultEnv && Object.keys(t.defaultEnv).length) lines.push(`  env: ${Object.keys(t.defaultEnv).join(", ")}`);
 		const activeTunnels = ctx.tunnels?.list?.() ?? [];
@@ -440,7 +448,7 @@ export default function (pi: ExtensionAPI) {
 	}): string {
 		// Order mirrors processRunScript: cd -> env -> activation -> per-call prefix -> command.
 		const parts: string[] = [];
-		if (params.cwd?.trim()) parts.push(`cd -- ${shQuote(toRemotePath(params.cwd, localCwd, t.remoteCwd))}`);
+		if (params.cwd?.trim()) parts.push(`cd -- ${shQuote(toRemotePath(params.cwd, localCwd, t.remoteCwd, t.remoteHome))}`);
 		parts.push(...buildEnvExports({ ...t.defaultEnv, ...params.env }));
 		if (t.defaultCommandPrefix?.trim()) parts.push(t.defaultCommandPrefix);
 		if (params.commandPrefix?.trim()) parts.push(params.commandPrefix);
