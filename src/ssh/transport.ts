@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { spawn } from "node:child_process";
+import { unlink } from "node:fs/promises";
 import type { RunOptions, RunResult, SshTarget } from "../types";
 import { shQuote } from "../utils";
 import {
@@ -27,25 +28,37 @@ export function runSsh(args: string[], opts?: RunOptions): Promise<RunResult> {
 		child.stdout!.on("data", (d) => out.push(d));
 		child.stderr!.on("data", (d) => err.push(d));
 		let timer: NodeJS.Timeout | undefined;
+		let killTimer: NodeJS.Timeout | undefined;
+		const clearTimers = () => {
+			if (timer) clearTimeout(timer);
+			if (killTimer) clearTimeout(killTimer);
+		};
+		const terminate = () => {
+			child.kill("SIGTERM");
+			if (!killTimer) {
+				killTimer = setTimeout(() => child.kill("SIGKILL"), 2000);
+				killTimer.unref?.();
+			}
+		};
 		if (opts?.timeout) {
 			timer = setTimeout(() => {
 				timedOut = true;
-				child.kill();
+				terminate();
 			}, opts.timeout * 1000);
 		}
-		const onAbort = () => child.kill();
+		const onAbort = () => terminate();
 		opts?.signal?.addEventListener("abort", onAbort, { once: true });
 		child.on("error", (e) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			clearTimers();
 			opts?.signal?.removeEventListener("abort", onAbort);
 			reject(e);
 		});
 		child.on("close", (code, closeSignal) => {
 			if (settled) return;
 			settled = true;
-			if (timer) clearTimeout(timer);
+			clearTimers();
 			opts?.signal?.removeEventListener("abort", onAbort);
 			resolve({ code, signal: closeSignal, stdout: Buffer.concat(out), stderr: Buffer.concat(err), timedOut });
 		});
@@ -53,7 +66,7 @@ export function runSsh(args: string[], opts?: RunOptions): Promise<RunResult> {
 			child.stdin!.on("error", (e) => {
 				if (settled) return;
 				settled = true;
-				if (timer) clearTimeout(timer);
+				clearTimers();
 				opts?.signal?.removeEventListener("abort", onAbort);
 				reject(e);
 			});
@@ -106,7 +119,7 @@ export async function runRemoteCommand(t: SshTarget, command: string, opts?: Run
 	let attempt = 1;
 	while (isRetryableSshFailure(r) && !opts?.signal?.aborted && attempt < maxAttempts) {
 		const next = attempt + 1;
-		await closeMaster(t);
+		await closeMaster(t, { reason: "retry" });
 		if (reconnect) {
 			const delayMs = backoffDelay(next);
 			notifyReconnect("retrying", { remote: t.remote, attempt: next, max: maxAttempts, delayMs });
@@ -134,7 +147,43 @@ export async function probePython(t: SshTarget): Promise<boolean> {
 	return r.code === 0;
 }
 
-export async function closeMaster(t: SshTarget): Promise<void> {
-	// Best-effort teardown; ignore errors.
-	await runSsh(["-O", "exit", ...t.sshOptions, ...baseSshOptions(t.socket), "--", t.remote], { timeout: 5 }).catch(() => {});
+export type CloseMasterReason = "retry";
+
+export function createCloseGuard(now: () => number = () => Date.now()) {
+	const inFlight = new Map<string, Promise<boolean>>();
+	const lastRetryClosedAt = new Map<string, number>();
+	return (socket: string, opts: { reason?: CloseMasterReason; debounceMs?: number }, fn: () => Promise<void>): Promise<boolean> => {
+		const existing = inFlight.get(socket);
+		if (existing) return existing;
+		if (opts.reason === "retry") {
+			const last = lastRetryClosedAt.get(socket);
+			if (last !== undefined && now() - last < (opts.debounceMs ?? 2000)) {
+				return Promise.resolve(false);
+			}
+		}
+		const run = (async () => {
+			try {
+				await fn();
+				return true;
+			} finally {
+				if (opts.reason === "retry") lastRetryClosedAt.set(socket, now());
+			}
+		})();
+		inFlight.set(socket, run);
+		void run.finally(() => {
+			if (inFlight.get(socket) === run) inFlight.delete(socket);
+		});
+		return run;
+	};
+}
+
+const closeGuard = createCloseGuard();
+
+export async function closeMaster(t: SshTarget, opts: { unlinkSocket?: boolean; reason?: CloseMasterReason } = {}): Promise<void> {
+	// Best-effort teardown; ignore errors. Removing the socket after the control
+	// command keeps a stale/dead mux socket from being re-used on the next invocation.
+	const executed = await closeGuard(t.socket, opts, () =>
+		runSsh(["-O", "exit", ...t.sshOptions, ...baseSshOptions(t.socket), "--", t.remote], { timeout: 5 }).then(() => undefined, () => undefined),
+	);
+	if (executed && opts.unlinkSocket !== false) await unlink(t.socket).catch(() => {});
 }

@@ -178,7 +178,7 @@ Manage:
 			}
 			push("");
 			push(`  ${T.fg("dim", "enter output \u00b7 k kill \u00b7 c clear \u00b7 r refresh")}`);
-			push(`  ${T.fg("dim", "n connect \u00b7 d disconnect \u00b7 w cwd \u00b7 y sync \u00b7 q close")}`);
+			push(`  ${T.fg("dim", "n connect \u00b7 R reconnect \u00b7 d disconnect \u00b7 w cwd \u00b7 y sync \u00b7 q close")}`);
 			push(this.rule(width));
 			return out;
 		}
@@ -233,6 +233,8 @@ Manage:
 				void this.poll(true);
 			} else if (data === "n") {
 				this.enterConnect();
+			} else if (data === "R") {
+				void this.doHardReconnect();
 			} else if (data === "d") {
 				void this.doDisconnect();
 			} else if (data === "w") {
@@ -291,6 +293,7 @@ Manage:
 			}
 			const items: SelectItem[] = names.map((n) => ({ value: `@${n}`, label: `@${n}`, description: "saved profile" }));
 			items.push({ value: "__new__", label: "type new connection\u2026", description: "prefill /ssh in the editor" });
+			if (getTarget()) items.push({ value: "__fresh__", label: "hard reconnect", description: "close pi ControlMaster and create a fresh login session" });
 			if (getTarget()) items.push({ value: "__off__", label: "disconnect", description: "close the active SSH connection" });
 			const list = new SelectList(items, Math.min(items.length, 10), selectListTheme(this.theme));
 			list.onSelect = (item: SelectItem) => void this.onConnectSelect(item.value);
@@ -315,6 +318,10 @@ Manage:
 			}
 			this.mode = "main";
 			this.connectList = null;
+			if (value === "__fresh__") {
+				await this.doHardReconnect();
+				return;
+			}
 			if (value === "__off__") {
 				await this.doDisconnect();
 				return;
@@ -336,6 +343,23 @@ Manage:
 			refreshStatus({ ui: this.ctx.ui });
 			this.rows = [];
 			this.tui.requestRender();
+		}
+
+		private async doHardReconnect(): Promise<void> {
+			const t = getTarget();
+			if (!t) return;
+			const arg = t.originArg || `${t.remote}:${shQuote(t.remoteCwd)}`;
+			try {
+				await switchTarget(arg, { fresh: true });
+				refreshStatus({ ui: this.ctx.ui });
+				this.err = null;
+				this.sel = 0;
+				this.top = 0;
+				await this.poll(true);
+			} catch (e) {
+				this.err = e instanceof Error ? e.message : String(e);
+				this.tui.requestRender();
+			}
 		}
 
 		private async killSelected(): Promise<void> {
@@ -406,7 +430,7 @@ Manage:
 
 	// --- runtime connect/disconnect/status ---
 	pi.registerCommand("ssh", {
-		description: "SSH remote dashboard/connect. Subcommands: status, cd, save, profiles, help monitor, off.",
+		description: "SSH remote dashboard/connect. Subcommands: status, reconnect, cd, save, profiles, help monitor, off.",
 		handler: async (args, cmdCtx) => {
 			const arg = args.trim();
 
@@ -425,6 +449,22 @@ Manage:
 				await disconnect();
 				refreshStatus(cmdCtx);
 				cmdCtx.ui.notify("SSH disconnected. Local tools remain local.", "info");
+				return;
+			}
+
+			if (arg === "reconnect" || arg === "fresh" || arg === "hard" || arg === "hard reconnect") {
+				const t = getTarget();
+				if (!t) {
+					cmdCtx.ui.notify("SSH: not connected", "warning");
+					return;
+				}
+				try {
+					const next = await switchTarget(t.originArg || `${t.remote}:${shQuote(t.remoteCwd)}`, { fresh: true });
+					refreshStatus(cmdCtx);
+					cmdCtx.ui.notify(`SSH hard reconnected (fresh login):\n${connectedText(next)}`, "info");
+				} catch (e) {
+					cmdCtx.ui.notify(`SSH hard reconnect failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+				}
 				return;
 			}
 

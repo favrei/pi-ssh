@@ -228,7 +228,7 @@ export function createRemoteBashOps(t: SshTarget, localCwd: string, opts?: { tty
 						signal?.removeEventListener("abort", onAbort);
 						const result: RunResult = { code, signal: closeSignal, stdout: Buffer.concat(out), stderr: Buffer.concat(err), timedOut };
 						if (allowRetry && isRetryableSshFailure(result) && !signal?.aborted) {
-							await closeMaster(t);
+							await closeMaster(t, { reason: "retry" });
 							attempt(false);
 							return;
 						}

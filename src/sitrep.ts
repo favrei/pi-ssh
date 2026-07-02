@@ -57,7 +57,7 @@ export function formatSyncSection(state: ReturnType<SshContext["sync"]["getState
 }
 
 export async function formatSshSitrep(ctx: SshContext, t: SshTarget): Promise<string> {
-	const lines: string[] = [ctx.connectedText(t)];
+	const lines: string[] = [ctx.connectedText(t), `ControlMaster socket: ${t.socket}`];
 	try {
 		const profiles = ctx.profileNames();
 		if (profiles.length) lines.push(`Saved profiles: ${profiles.map((n) => `@${n}`).join(", ")}`);

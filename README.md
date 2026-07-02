@@ -25,12 +25,25 @@ enables the efficient in-place `ssh_edit`.
 ```
 /ssh -i /path/key.pem root@host:/abs/work        # connect, set remote cwd
 /ssh root@host                                    # use remote pwd as cwd
+/ssh --fresh root@host                            # hard reconnect: fresh login session
+/ssh reconnect                                    # hard reconnect the current target
 /ssh status                                       # print current connection status
 /ssh cd subdir/or/abs/path                        # move remote cwd (no reconnect)
 /ssh profiles                                     # list saved profiles
 /ssh off                                          # disconnect
 /ssh                                              # open the interactive dashboard
 ```
+
+`--fresh` / `--hard` keeps multiplexing enabled but closes the current pi-owned
+ControlMaster first, removes its socket, then creates a new SSH login session.
+Use it after login-time state changes such as adding the user to `docker`, `kvm`,
+`render`, etc., changing PAM limits, or refreshing login environment. Agent tools
+can request the same behavior with `ssh_connect { target, fresh: true }`.
+The extension intentionally rejects `--no-controlmaster` / `-o ControlMaster=…`
+because tunnels, process polling, sync, and low-latency commands rely on its
+managed mux; hard reconnect refreshes login state without disabling muxing. pi
+uses a private random `ControlPath` per active connection; if a manual shell
+`ssh` is stale, close that separate master with `ssh -O exit <host>`.
 
 ### Dashboard (`/ssh` with no args)
 
@@ -39,8 +52,8 @@ Bare `/ssh` opens an interactive overlay instead of a one-line status:
 - connection block (remote, cwd, python3, activation, env, tunnels, sync state)
 - a live process table (refreshes every ~2s) with status, runtime, pid
 - keys: `↑↓` select · `enter` live output (esc back) · `k` kill · `c` clear
-  finished · `r` refresh · `n` connect (profile picker) · `d` disconnect ·
-  `w` cwd · `y` toggle sync · `q`/`esc` close
+  finished · `r` refresh · `n` connect (profile picker) · `R` hard reconnect ·
+  `d` disconnect · `w` cwd · `y` toggle sync · `q`/`esc` close
 
 When connected, a compact `ssh: N running` widget shows above the editor whenever
 remote jobs are running, so activity is visible without opening the dashboard.
@@ -302,6 +315,14 @@ status `Reconnecting user@host — attempt 2/10, retry in 1s…` and an info/err
 notice on recovery/give-up. It only re-runs on transport failures (where the
 command never executed), so re-running is safe.
 
+This transient-drop recovery is different from a **hard reconnect**. SSH
+ControlMaster sessions keep login-time credentials (supplementary groups, PAM
+limits, login env) from when the master authenticated. If those change on the
+remote, run `/ssh reconnect`, `/ssh --fresh <target>`, or `ssh_connect` with
+`fresh:true` to close the old pi ControlMaster before reconnecting. Active
+process/monitor state is repointed for the same target, and active/saved tunnels
+are re-issued after the new master is created.
+
 Gated by `AsyncLocalStorage` so background pollers (process/widget monitoring)
 never block on a long backoff — they keep failing fast and retrying next tick.
 `ssh_bash` and `ssh_process start` intentionally keep the single retry (re-running
@@ -309,7 +330,7 @@ a long/launching command up to 10× would be unsafe).
 
 ## Design notes
 
-- OpenSSH ControlMaster multiplexing — one persistent master per connection.
+- OpenSSH ControlMaster multiplexing — one persistent master per connection; explicit hard reconnect refreshes login state without disabling multiplexing.
 - Real in-place remote `ssh_edit` via python3 (diff returned); read-rewrite fallback when python3 is absent.
 - POSIX-safe quoting; payloads sent via stdin; remote-path escapes rejected.
 - Retry-once on transport drops (ControlMaster reset); poller ticks swallow

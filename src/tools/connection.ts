@@ -13,20 +13,22 @@ export function setupConnectionTools(ssh: SshContext): void {
 	pi.registerTool({
 		name: "ssh_connect",
 		label: "ssh_connect",
-		description: "Connect, reconnect, or switch the active SSH remote for ssh_* tools. Same target syntax as /ssh; supports --activate and repeated --env.",
+		description: "Connect, reconnect, or switch the active SSH remote for ssh_* tools. Same target syntax as /ssh; supports --activate, repeated --env, and fresh hard reconnects.",
 		promptSnippet: "Connect or switch the active SSH remote used by ssh_* tools",
 		promptGuidelines: [
 			"Use ssh_connect when the user asks to connect, disconnect, or switch SSH servers.",
+			"Use fresh:true after remote group/PAM/login-environment changes when the current SSH session may have stale login state.",
 			"After connecting, use ssh_* tools for remote operations and local tools for local work.",
 		],
 		parameters: Type.Object({
-			target: Type.String({ description: "SSH target: user@host[:/abs/path], ssh options, @profile, plus optional --activate/--env" }),
+			target: Type.String({ description: "SSH target: user@host[:/abs/path], ssh options, @profile, plus optional --activate/--env/--fresh" }),
+			fresh: Type.Optional(Type.Boolean({ description: "Close the current pi-owned ControlMaster and remove its socket before connecting, forcing a new remote login session." })),
 		}),
 		renderCall(args: any, theme: any, context: any) {
 			return sshTitle("connect", theme.fg("accent", str(args?.target)), theme, context);
 		},
-		async execute(_id, params: { target: string }, _signal, _onUpdate, ctx) {
-			const next = await switchTarget(params.target);
+		async execute(_id, params: { target: string; fresh?: boolean }, _signal, _onUpdate, ctx) {
+			const next = await switchTarget(params.target, { fresh: params.fresh });
 			refreshStatus(ctx);
 			return { content: [{ type: "text" as const, text: connectedText(next) }], details: undefined };
 		},

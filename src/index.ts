@@ -11,6 +11,8 @@
  *   /ssh -i /path/to/key.pem root@host                  # identity file / ssh options
  *   /ssh -i key root@host:/path --activate 'source .venv/bin/activate'
  *   /ssh root@host --env PYTHONPATH=/src --env CUDA_VISIBLE_DEVICES=0
+ *   /ssh --fresh root@host                             # close old mux first; fresh login state
+ *   /ssh reconnect                                     # hard reconnect current target
  *   /ssh off                                           # disconnect
  *   /ssh                                               # show current status
  *
@@ -18,7 +20,8 @@
  * prefix / environment that is applied to EVERY ssh_bash and ssh_process run,
  * so you do not have to re-source a venv or re-export vars on each call.
  *
- * Agents can also call ssh_connect/ssh_disconnect/ssh_status directly.
+ * Agents can also call ssh_connect/ssh_disconnect/ssh_status directly; pass
+ * fresh:true to ssh_connect after remote group/PAM/login-state changes.
  *
  * Or at startup:
  *   pi -e ./ssh/index.ts --ssh "-i /path/to/key.pem root@host[:/path]"
@@ -48,7 +51,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Activation, SshTarget } from "./types";
 import { buildEnvExports, shQuote, toRemotePath } from "./utils";
 import { setReconnectNotifier } from "./ssh/reconnect";
-import { closeMaster } from "./ssh/transport";
+import { closeMaster, runRemoteCommand } from "./ssh/transport";
 import { resolveTarget } from "./ssh/target";
 import { sendProcessMessage } from "./notify";
 import { createRender } from "./render";
@@ -207,18 +210,27 @@ export default function (pi: ExtensionAPI) {
 		return tokens;
 	}
 
-	function parseConnectArg(arg: string): { remote: string; path?: string; sshOptions: string[]; activation: Activation } {
+	function parseConnectArg(arg: string): { remote: string; path?: string; sshOptions: string[]; activation: Activation; fresh: boolean } {
 		const tokens = tokenizeSshArgs(arg);
 		if (tokens[0] === "ssh") tokens.shift();
 		if (tokens.length === 0) throw new Error("Missing SSH destination");
 
-		// Extract our own --activate / --env flags before treating the rest as ssh
-		// options + destination. Values may be attached (--env=K=V) or separate.
+		// Extract our own flags before treating the rest as ssh options + destination.
+		// Values may be attached (--env=K=V) or separate. --fresh/--hard force a new
+		// login session while keeping ControlMaster enabled for normal extension use.
 		let commandPrefix: string | undefined;
+		let fresh = false;
 		const env: Record<string, string> = {};
 		const rest: string[] = [];
 		for (let i = 0; i < tokens.length; i++) {
 			const tk = tokens[i];
+			if (tk === "--fresh" || tk === "--hard" || tk === "--hard-reconnect") {
+				fresh = true;
+				continue;
+			}
+			if (tk === "--no-controlmaster" || tk === "--no-control-master") {
+				throw new Error("--no-controlmaster is not supported: pi SSH uses ControlMaster for tunnels, process polling, sync, and low-latency tools. Use --fresh/--hard to force a new login session while keeping multiplexing enabled.");
+			}
 			if (tk === "--activate") {
 				commandPrefix = tokens[++i];
 				if (commandPrefix === undefined) throw new Error("--activate requires a command, e.g. --activate 'source .venv/bin/activate'");
@@ -243,6 +255,13 @@ export default function (pi: ExtensionAPI) {
 		if (rest.length === 0) throw new Error("Missing SSH destination");
 		const destination = rest[rest.length - 1];
 		const sshOptions = rest.slice(0, -1);
+		for (let i = 0; i < sshOptions.length; i++) {
+			const opt = sshOptions[i];
+			const value = opt === "-o" ? (sshOptions[i + 1] ?? "") : opt.startsWith("-o") ? opt.slice(2) : "";
+			if (opt === "-S" || opt.startsWith("-S") || opt === "-M" || opt.startsWith("-M") || /^Control(?:Master|Path|Persist)\b/i.test(value)) {
+				throw new Error("pi SSH manages ControlMaster/ControlPath internally. Use --fresh/--hard to force a new login session instead of overriding mux options.");
+			}
+		}
 		const activation: Activation = { commandPrefix, env: Object.keys(env).length ? env : undefined };
 		const homePath = destination.match(/^(.+):(~(?:\/.*)?)$/);
 		if (homePath) {
@@ -250,9 +269,9 @@ export default function (pi: ExtensionAPI) {
 		}
 		const match = destination.match(/^(.+):(\/.*)$/);
 		if (!match) {
-			return { remote: destination, sshOptions, activation };
+			return { remote: destination, sshOptions, activation, fresh };
 		}
-		return { remote: match[1], path: match[2], sshOptions, activation };
+		return { remote: match[1], path: match[2], sshOptions, activation, fresh };
 	}
 
 	// --- connection profiles (~/.pi/ssh-profiles.json) ---
@@ -312,24 +331,46 @@ export default function (pi: ExtensionAPI) {
 		return t;
 	}
 
-	async function switchTarget(arg: string): Promise<SshTarget> {
-		const next = await connect(arg);
+	async function switchTarget(arg: string, options: { fresh?: boolean } = {}): Promise<SshTarget> {
+		const expanded = expandProfile(arg);
+		const parsed = parseConnectArg(expanded);
 		const prev = target;
+		const fresh = !!(options.fresh || parsed.fresh);
+		if (fresh && prev) {
+			// A hard reconnect must create a new remote login/PAM session. Close the
+			// pi-owned mux before resolving the new target; the old master may carry
+			// stale supplementary groups or login-time environment.
+			await closeMaster(prev);
+		}
+		let next: SshTarget;
+		try {
+			next = await resolveTarget(parsed.remote, parsed.path, parsed.sshOptions, parsed.activation);
+		} catch (e) {
+			if (fresh && prev) {
+				// Keep the previous logical connection. Its mux was closed above, so warm
+				// it back up before re-issuing tracked forwards.
+				await runRemoteCommand(prev, "true", { login: false, timeout: 10 }).catch(() => {});
+				await ctx.tunnels.restoreAll().catch(() => {});
+				throw new Error(`hard reconnect failed; previous connection retained: ${e instanceof Error ? e.message : String(e)}`);
+			}
+			throw e;
+		}
+		next.originArg = expanded.trim();
+		const sameTarget = !!prev && prev.remote === next.remote && prev.remoteCwd === next.remoteCwd;
 		// Reconnecting to the SAME host+cwd (same .pi-ssh-processes registry): keep the
-		// in-memory pollers and just repoint them at the new connection, so a reconnect
-		// never silently drops a still-pending completion / log-watch notification.
-		if (prev && prev.remote === next.remote && prev.remoteCwd === next.remoteCwd) {
+		// in-memory pollers/monitors and active tunnel registry, then repoint/re-issue
+		// them against the new master. Different targets get a clean slate.
+		if (sameTarget) {
 			poller.repointAll(next);
 			monitors.repointAll(next);
 		} else {
 			poller.stopAll();
 			monitors.stopAll();
+			if (prev) ctx.tunnels.stopAll();
 		}
-		if (prev) {
-			ctx.tunnels.stopAll();
-			await closeMaster(prev);
-		}
+		if (prev && !fresh) await closeMaster(prev);
 		target = next;
+		if (sameTarget) await ctx.tunnels.restoreAll();
 		await ctx.tunnels.restoreSaved(next);
 		await poller.rehydrate(next);
 		await monitors.rehydrate(next);
