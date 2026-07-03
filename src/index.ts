@@ -51,7 +51,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Activation, ShellMode, SshTarget } from "./types";
 import { buildEnvExports, shQuote, toRemotePath } from "./utils";
 import { setReconnectNotifier } from "./ssh/reconnect";
-import { closeMaster, runRemoteCommand, setMasterRecycledNotifier } from "./ssh/transport";
+import { closeMaster, isRetryableSshFailure, remoteShell, runRemoteCommand, runSsh, setMasterRecycledNotifier, sshConnArgs, sshFailureMessage } from "./ssh/transport";
 import { resolveTarget } from "./ssh/target";
 import { sendProcessMessage } from "./notify";
 import { createRender } from "./render";
@@ -100,18 +100,86 @@ export default function (pi: ExtensionAPI) {
 		return `SSH: ${t.remote}:${t.remoteCwd}${t.hasPython ? "" : " (no python3)"}${act}${dirty}`;
 	}
 
-	// Last seen ui handle, captured from any ctx, so the connection-level widget
-	// poller can update the footer widget without a live command/tool ctx.
+	// Last seen ui handle, captured from any ctx, so the connection-level footer
+	// heartbeat can update status/widgets without a live command/tool ctx.
 	let uiRef: { setStatus: (k: string, v?: string) => void; setWidget: (k: string, v?: unknown, o?: unknown) => void; notify: (msg: string, type?: "info" | "warning" | "error") => void; theme: { fg: (c: string, s: string) => string } } | null = null;
 	let widgetTimer: NodeJS.Timeout | null = null;
-	const WIDGET_POLL_MS = 5000;
+	const HEARTBEAT_POLL_MS = 2000;
+	const HEARTBEAT_TIMEOUT_S = 3;
+	const PROCESS_WIDGET_POLL_MS = 5000;
+	let heartbeatState: "online" | "offline" | "unknown" = "unknown";
+	let heartbeatFailures = 0;
+	let heartbeatLastError = "";
+	let lastProcessWidgetAt = 0;
+	let lastProcessWidgetParts: string[] = [];
+	let reconnectStatusActive = false;
+	let heartbeatRecycle: Promise<void> | null = null;
 
 	function stopWidgetPoller(): void {
 		if (widgetTimer) {
 			clearInterval(widgetTimer);
 			widgetTimer = null;
 		}
+		heartbeatState = "unknown";
+		heartbeatFailures = 0;
+		heartbeatLastError = "";
+		reconnectStatusActive = false;
+		lastProcessWidgetAt = 0;
+		lastProcessWidgetParts = [];
+		heartbeatRecycle = null;
 		uiRef?.setWidget("ssh-procs", undefined);
+	}
+
+	function resetHeartbeatOnline(): void {
+		heartbeatState = target ? "online" : "unknown";
+		heartbeatFailures = 0;
+		heartbeatLastError = "";
+		heartbeatRecycle = null;
+	}
+
+	function renderSshStatus(): void {
+		if (!uiRef) return;
+		const label = statusLabel(target);
+		if (!label) {
+			uiRef.setStatus("ssh", "");
+			return;
+		}
+		if (heartbeatState === "offline") {
+			uiRef.setStatus("ssh", uiRef.theme.fg("warning", `${label} — offline (heartbeat failed; tunnels may be down)`));
+			return;
+		}
+		uiRef.setStatus("ssh", uiRef.theme.fg("accent", label));
+	}
+
+	async function heartbeatProbe(t: SshTarget): Promise<{ ok: boolean; error?: string; recycleMaster?: boolean }> {
+		try {
+			const r = await runSsh([...sshConnArgs(t), remoteShell(t, "true", false)], { timeout: HEARTBEAT_TIMEOUT_S });
+			if (r.code === 0 && !r.signal && !r.timedOut) return { ok: true };
+			const msg = r.stderr.toString().trim() || r.stdout.toString().trim() || sshFailureMessage(r);
+			return { ok: false, error: msg.split(/\r?\n/)[0], recycleMaster: r.timedOut || isRetryableSshFailure(r) };
+		} catch (e) {
+			return { ok: false, error: e instanceof Error ? e.message : String(e), recycleMaster: true };
+		}
+	}
+
+	function recycleHeartbeatMaster(t: SshTarget): void {
+		if (heartbeatRecycle) return;
+		heartbeatRecycle = closeMaster(t, { reason: "retry" }).catch(() => {}).finally(() => {
+			if (target === t) heartbeatRecycle = null;
+		});
+	}
+
+	function renderWidget(parts: string[]): void {
+		if (!uiRef) return;
+		const tunnelCount = ctx.tunnels?.list().length ?? 0;
+		const merged = [...parts];
+		if (tunnelCount > 0 && !merged.some((p) => /tunnels?$/.test(p))) merged.push(`${tunnelCount} tunnel${tunnelCount === 1 ? "" : "s"}`);
+		if (heartbeatState === "offline") {
+			const text = merged.length ? `ssh offline: ${merged.join(" \u00b7 ")}` : "ssh offline";
+			uiRef.setWidget("ssh-procs", [uiRef.theme.fg("warning", text)]);
+			return;
+		}
+		uiRef.setWidget("ssh-procs", merged.length ? [uiRef.theme.fg("accent", `ssh: ${merged.join(" \u00b7 ")}`)] : undefined);
 	}
 
 	function startWidgetPoller(): void {
@@ -120,32 +188,57 @@ export default function (pi: ExtensionAPI) {
 		const tickWidget = async () => {
 			if (busy || !target || !uiRef) return;
 			busy = true;
+			const checkedTarget = target;
 			try {
-				const rows = await listProcesses(target);
-				const running = rows.filter((r) => r.status === "running").length;
-				const tunnelCount = ctx.tunnels?.list().length ?? 0;
-				const parts: string[] = [];
-				if (running > 0) parts.push(`${running} running`);
-				if (tunnelCount > 0) parts.push(`${tunnelCount} tunnel${tunnelCount === 1 ? "" : "s"}`);
-				uiRef.setWidget("ssh-procs", parts.length ? [uiRef.theme.fg("accent", `ssh: ${parts.join(" \u00b7 ")}`)] : undefined);
+				if (!reconnectStatusActive && !heartbeatRecycle) {
+					const wasOffline = heartbeatState === "offline";
+					const hb = await heartbeatProbe(checkedTarget);
+					if (target !== checkedTarget) return;
+					if (hb.ok) {
+						heartbeatFailures = 0;
+						heartbeatLastError = "";
+						heartbeatState = "online";
+						if (wasOffline) {
+							uiRef.notify(`SSH heartbeat recovered: ${checkedTarget.remote}`, "info");
+							scheduleTunnelRestore(checkedTarget.socket);
+						}
+					} else {
+						heartbeatFailures++;
+						heartbeatLastError = hb.error ?? "heartbeat failed";
+						if (heartbeatState !== "offline") {
+							heartbeatState = "offline";
+							uiRef.notify(`SSH heartbeat lost: ${checkedTarget.remote}${heartbeatLastError ? ` (${heartbeatLastError})` : ""}`, "warning");
+						}
+						if (hb.recycleMaster) recycleHeartbeatMaster(checkedTarget);
+					}
+					renderSshStatus();
+				} else if (heartbeatRecycle) {
+					renderSshStatus();
+				}
+
+				if (heartbeatState !== "offline" && Date.now() - lastProcessWidgetAt >= PROCESS_WIDGET_POLL_MS) {
+					const rows = await listProcesses(checkedTarget);
+					if (target !== checkedTarget) return;
+					const running = rows.filter((r) => r.status === "running").length;
+					lastProcessWidgetParts = running > 0 ? [`${running} running`] : [];
+					lastProcessWidgetAt = Date.now();
+				}
+				renderWidget(lastProcessWidgetParts);
 			} catch {
-				/* transient: keep the last widget value, retry next tick */
+				/* transient: heartbeat owns offline state; keep the last widget value */
 			} finally {
 				busy = false;
 			}
 		};
-		widgetTimer = setInterval(() => void tickWidget(), WIDGET_POLL_MS);
+		widgetTimer = setInterval(() => void tickWidget(), HEARTBEAT_POLL_MS);
 		widgetTimer.unref?.();
 		void tickWidget();
 	}
 
 	function refreshStatus(ctx: any) {
 		if (ctx?.ui) uiRef = ctx.ui;
-		if (uiRef) {
-			const label = statusLabel(target);
-			uiRef.setStatus("ssh", label ? uiRef.theme.fg("accent", label) : "");
-		}
-		// Drive the running-process widget by connection state.
+		if (!reconnectStatusActive) renderSshStatus();
+		// Drive the heartbeat/process widget by connection state.
 		if (target && uiRef) startWidgetPoller();
 		else stopWidgetPoller();
 	}
@@ -191,25 +284,32 @@ export default function (pi: ExtensionAPI) {
 	// Reads uiRef/target lazily at call time, so a single assignment stays current.
 	setReconnectNotifier((phase, info) => {
 		if (phase === "retrying") {
+			reconnectStatusActive = true;
 			if (uiRef) {
 				uiRef.setStatus("ssh", uiRef.theme.fg("warning", `Reconnecting ${info.remote} \u2014 attempt ${info.attempt}/${info.max}, retry in ${Math.round(info.delayMs / 1000)}s\u2026`));
 			}
 			return;
 		}
-		const label = statusLabel(target);
-		if (uiRef) uiRef.setStatus("ssh", label ? uiRef.theme.fg("accent", label) : "");
+		reconnectStatusActive = false;
 		if (phase === "recovered") {
+			resetHeartbeatOnline();
 			clearLoginEnvDirty(target?.socket);
+			renderSshStatus();
 			uiRef?.notify(`SSH reconnected: ${info.remote}`, "info");
 			// The respawned master lost its -L forwards; re-issue tracked tunnels.
 			scheduleTunnelRestore(target?.socket);
 		} else {
+			heartbeatState = target ? "offline" : "unknown";
+			heartbeatFailures = Math.max(heartbeatFailures, 1);
+			heartbeatLastError = "reconnect failed";
+			renderSshStatus();
 			uiRef?.notify(`SSH reconnect to ${info.remote} failed after ${info.max} attempts`, "error");
 		}
 	});
 
 	setMasterRecycledNotifier((info) => {
 		if (target?.socket !== info.socket) return;
+		resetHeartbeatOnline();
 		clearLoginEnvDirty(info.socket);
 		refreshStatus(null);
 		scheduleTunnelRestore(info.socket);
@@ -418,6 +518,7 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (prev && !fresh) await closeMaster(prev);
 		target = next;
+		resetHeartbeatOnline();
 		if (sameTarget) await ctx.tunnels.restoreAll();
 		await ctx.tunnels.restoreSaved(next);
 		await poller.rehydrate(next);
@@ -434,6 +535,7 @@ export default function (pi: ExtensionAPI) {
 			await closeMaster(target);
 		}
 		target = null;
+		resetHeartbeatOnline();
 	}
 
 
