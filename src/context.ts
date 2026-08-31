@@ -28,7 +28,12 @@ export interface SshContext {
 	render: SshRender;
 	// connection actions (mutate the active target inside index.ts core)
 	connect(arg: string): Promise<SshTarget>;
-	switchTarget(arg: string, options?: { fresh?: boolean }): Promise<SshTarget>;
+	switchTarget(arg: string, options?: {
+		fresh?: boolean;
+		heartbeatEnabled?: boolean;
+		heartbeatIntervalSeconds?: number;
+		heartbeatTimeoutSeconds?: number;
+	}): Promise<SshTarget>;
 	disconnect(): Promise<void>;
 	refreshStatus(toolCtx: any): void;
 	connectedText(t: SshTarget): string;

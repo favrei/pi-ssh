@@ -51,7 +51,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Activation, ShellMode, SshTarget } from "./types";
 import { buildEnvExports, shQuote, toRemotePath } from "./utils";
 import { setReconnectNotifier } from "./ssh/reconnect";
-import { closeMaster, isRetryableSshFailure, remoteShell, runRemoteCommand, runSsh, setMasterRecycledNotifier, sshConnArgs, sshFailureMessage } from "./ssh/transport";
+import { closeMaster, remoteShell, runRemoteCommand, runSsh, setMasterRecycledNotifier, sshConnArgs, sshFailureMessage } from "./ssh/transport";
 import { resolveTarget } from "./ssh/target";
 import { sendProcessMessage } from "./notify";
 import { createRender } from "./render";
@@ -104,8 +104,12 @@ export default function (pi: ExtensionAPI) {
 	// heartbeat can update status/widgets without a live command/tool ctx.
 	let uiRef: { setStatus: (k: string, v?: string) => void; setWidget: (k: string, v?: unknown, o?: unknown) => void; notify: (msg: string, type?: "info" | "warning" | "error") => void; theme: { fg: (c: string, s: string) => string } } | null = null;
 	let widgetTimer: NodeJS.Timeout | null = null;
-	const HEARTBEAT_POLL_MS = 2000;
-	const HEARTBEAT_TIMEOUT_S = 3;
+	// Keep the status probe well outside normal high-latency command times. The
+	// heartbeat is observational only: command paths own master recovery so a
+	// slow probe can never tear down unrelated in-flight sessions.
+	let heartbeatPollMs = 10_000;
+	let heartbeatTimeoutS = 30;
+	let heartbeatEnabled = true;
 	const PROCESS_WIDGET_POLL_MS = 5000;
 	let heartbeatState: "online" | "offline" | "unknown" = "unknown";
 	let heartbeatFailures = 0;
@@ -113,7 +117,6 @@ export default function (pi: ExtensionAPI) {
 	let lastProcessWidgetAt = 0;
 	let lastProcessWidgetParts: string[] = [];
 	let reconnectStatusActive = false;
-	let heartbeatRecycle: Promise<void> | null = null;
 
 	function stopWidgetPoller(): void {
 		if (widgetTimer) {
@@ -126,7 +129,6 @@ export default function (pi: ExtensionAPI) {
 		reconnectStatusActive = false;
 		lastProcessWidgetAt = 0;
 		lastProcessWidgetParts = [];
-		heartbeatRecycle = null;
 		uiRef?.setWidget("ssh-procs", undefined);
 	}
 
@@ -134,7 +136,6 @@ export default function (pi: ExtensionAPI) {
 		heartbeatState = target ? "online" : "unknown";
 		heartbeatFailures = 0;
 		heartbeatLastError = "";
-		heartbeatRecycle = null;
 	}
 
 	function renderSshStatus(): void {
@@ -151,22 +152,15 @@ export default function (pi: ExtensionAPI) {
 		uiRef.setStatus("ssh", uiRef.theme.fg("accent", label));
 	}
 
-	async function heartbeatProbe(t: SshTarget): Promise<{ ok: boolean; error?: string; recycleMaster?: boolean }> {
+	async function heartbeatProbe(t: SshTarget): Promise<{ ok: boolean; error?: string }> {
 		try {
-			const r = await runSsh([...sshConnArgs(t), remoteShell(t, "true", false)], { timeout: HEARTBEAT_TIMEOUT_S });
+			const r = await runSsh([...sshConnArgs(t), remoteShell(t, "true", false)], { timeout: heartbeatTimeoutS });
 			if (r.code === 0 && !r.signal && !r.timedOut) return { ok: true };
 			const msg = r.stderr.toString().trim() || r.stdout.toString().trim() || sshFailureMessage(r);
-			return { ok: false, error: msg.split(/\r?\n/)[0], recycleMaster: r.timedOut || isRetryableSshFailure(r) };
+			return { ok: false, error: msg.split(/\r?\n/)[0] };
 		} catch (e) {
-			return { ok: false, error: e instanceof Error ? e.message : String(e), recycleMaster: true };
+			return { ok: false, error: e instanceof Error ? e.message : String(e) };
 		}
-	}
-
-	function recycleHeartbeatMaster(t: SshTarget): void {
-		if (heartbeatRecycle) return;
-		heartbeatRecycle = closeMaster(t, { reason: "retry" }).catch(() => {}).finally(() => {
-			if (target === t) heartbeatRecycle = null;
-		});
 	}
 
 	function renderWidget(parts: string[]): void {
@@ -190,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 			busy = true;
 			const checkedTarget = target;
 			try {
-				if (!reconnectStatusActive && !heartbeatRecycle) {
+				if (!reconnectStatusActive && heartbeatEnabled) {
 					const wasOffline = heartbeatState === "offline";
 					const hb = await heartbeatProbe(checkedTarget);
 					if (target !== checkedTarget) return;
@@ -209,10 +203,7 @@ export default function (pi: ExtensionAPI) {
 							heartbeatState = "offline";
 							uiRef.notify(`SSH heartbeat lost: ${checkedTarget.remote}${heartbeatLastError ? ` (${heartbeatLastError})` : ""}`, "warning");
 						}
-						if (hb.recycleMaster) recycleHeartbeatMaster(checkedTarget);
 					}
-					renderSshStatus();
-				} else if (heartbeatRecycle) {
 					renderSshStatus();
 				}
 
@@ -230,7 +221,7 @@ export default function (pi: ExtensionAPI) {
 				busy = false;
 			}
 		};
-		widgetTimer = setInterval(() => void tickWidget(), HEARTBEAT_POLL_MS);
+		widgetTimer = setInterval(() => void tickWidget(), heartbeatPollMs);
 		widgetTimer.unref?.();
 		void tickWidget();
 	}
@@ -478,7 +469,12 @@ export default function (pi: ExtensionAPI) {
 		return t;
 	}
 
-	async function switchTarget(arg: string, options: { fresh?: boolean } = {}): Promise<SshTarget> {
+	async function switchTarget(arg: string, options: {
+		fresh?: boolean;
+		heartbeatEnabled?: boolean;
+		heartbeatIntervalSeconds?: number;
+		heartbeatTimeoutSeconds?: number;
+	} = {}): Promise<SshTarget> {
 		const expanded = expandProfile(arg);
 		const parsed = parseConnectArg(expanded);
 		const prev = target;
@@ -518,6 +514,11 @@ export default function (pi: ExtensionAPI) {
 		}
 		if (prev && !fresh) await closeMaster(prev);
 		target = next;
+		if (options.heartbeatEnabled !== undefined) heartbeatEnabled = options.heartbeatEnabled;
+		if (options.heartbeatIntervalSeconds !== undefined) heartbeatPollMs = options.heartbeatIntervalSeconds * 1000;
+		if (options.heartbeatTimeoutSeconds !== undefined) heartbeatTimeoutS = options.heartbeatTimeoutSeconds;
+		// A changed cadence needs a fresh timer. This does not touch the ControlMaster.
+		stopWidgetPoller();
 		resetHeartbeatOnline();
 		if (sameTarget) await ctx.tunnels.restoreAll();
 		await ctx.tunnels.restoreSaved(next);
@@ -553,6 +554,7 @@ export default function (pi: ExtensionAPI) {
 		if (t.localControlMasterDetected) lines.push("  local ssh config: global ControlMaster detected; run /ssh doctor");
 		if (t.defaultCommandPrefix) lines.push(`  activation (every ssh_bash/ssh_process): ${t.defaultCommandPrefix}`);
 		if (t.defaultEnv && Object.keys(t.defaultEnv).length) lines.push(`  env: ${Object.keys(t.defaultEnv).join(", ")}`);
+		lines.push(`  heartbeat: ${heartbeatEnabled ? `${heartbeatPollMs / 1000}s interval, ${heartbeatTimeoutS}s timeout` : "off"}`);
 		const activeTunnels = ctx.tunnels?.list?.() ?? [];
 		if (activeTunnels.length) {
 			lines.push(`  tunnels: ${activeTunnels.map((x) => `localhost:${x.localPort}->${x.remoteHost}:${x.remotePort}${x.saved ? " [saved]" : ""}`).join(", ")}`);
