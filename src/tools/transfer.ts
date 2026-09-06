@@ -2,11 +2,13 @@
 // ssh_push / ssh_pull: rsync the workspace to/from the remote
 // ---------------------------------------------------------------------------
 
+import { stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Type } from "typebox";
 import type { SshContext } from "../context";
-import { formatDuration, summarizeRsync, toRemotePath } from "../utils";
+import { runRemoteCommand, sshFailureMessage } from "../ssh/transport";
 import { ensureTrailingSlash, runRsyncTransfer, rsyncStreamer } from "../transfer";
+import { formatDuration, shQuote, summarizeRsync, toRemotePath } from "../utils";
 
 export function setupTransferTools(ssh: SshContext): void {
 	const { pi, localCwd, requireTarget, render } = ssh;
@@ -34,7 +36,8 @@ export function setupTransferTools(ssh: SshContext): void {
 		},
 		async execute(_id, params: { localPath?: string; remotePath?: string; delete?: boolean; dryRun?: boolean; excludes?: string[]; verbose?: boolean }, signal, onUpdate) {
 			const t = requireTarget();
-			const localSource = ensureTrailingSlash(resolve(localCwd, params.localPath ?? "."));
+			const localSourcePath = resolve(localCwd, params.localPath ?? ".");
+			const localSource = (await stat(localSourcePath)).isDirectory() ? ensureTrailingSlash(localSourcePath) : localSourcePath;
 			const remoteDest = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd);
 			const verbose = params.verbose ?? false;
 			const fallback = `Pushed ${localSource} -> ${t.remote}:${remoteDest}`;
@@ -74,7 +77,12 @@ export function setupTransferTools(ssh: SshContext): void {
 		},
 		async execute(_id, params: { remotePath?: string; localPath?: string; delete?: boolean; dryRun?: boolean; excludes?: string[]; verbose?: boolean }, signal, onUpdate) {
 			const t = requireTarget();
-			const remoteSource = ensureTrailingSlash(params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd);
+			const remoteSourcePath = params.remotePath ? toRemotePath(params.remotePath, localCwd, t.remoteCwd, t.remoteHome) : t.remoteCwd;
+			const q = shQuote(remoteSourcePath);
+			const kind = await runRemoteCommand(t, `if [ -d ${q} ]; then printf d; elif [ -e ${q} ]; then printf f; else exit 44; fi`, { login: false });
+			if (kind.code === 44) throw new Error(`Remote source not found: ${remoteSourcePath}`);
+			if (kind.code !== 0) throw new Error(`${sshFailureMessage(kind)}: ${kind.stderr.toString().trim() || remoteSourcePath}`);
+			const remoteSource = kind.stdout.toString() === "d" ? ensureTrailingSlash(remoteSourcePath) : remoteSourcePath;
 			const localDest = ensureTrailingSlash(resolve(localCwd, params.localPath ?? "."));
 			const verbose = params.verbose ?? false;
 			const fallback = `Pulled ${t.remote}:${remoteSource} -> ${localDest}`;
