@@ -5,3 +5,7 @@ node_modules/
 
 # local typecheck baseline (env-specific: tied to installed pi .d.ts version)
 docs/.tsc-baseline.txt
+
+# machine-specific: peer deps are linked to the host pi install, so a
+# committed lock hard-codes one machine's pi path (and its audit state)
+package-lock.json

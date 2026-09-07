@@ -370,7 +370,21 @@ a long/launching command up to 10× would be unsafe).
 
 ## Type-check (dev)
 
-No local TS install is bundled. To type-check against pi's own types:
+`package-lock.json` is intentionally not committed: the pi peers are linked to
+whatever pi install the machine has, so a committed lock hard-codes one
+machine's absolute pi path. For a dev checkout:
+
+```bash
+npm install
+mkdir -p node_modules/@earendil-works
+PIROOT=$(npm root -g)/@earendil-works/pi-coding-agent
+ln -sfn "$PIROOT" node_modules/@earendil-works/pi-coding-agent
+ln -sfn "$PIROOT/node_modules/@earendil-works/pi-tui" node_modules/@earendil-works/pi-tui
+ln -sfn "$PIROOT/node_modules/typebox" node_modules/typebox
+npm run typecheck
+```
+
+Or type-check against pi's own types without linking:
 
 ```bash
 PIROOT=$(dirname "$(command -v pi)")/../lib/node_modules/@earendil-works/pi-coding-agent
