@@ -394,6 +394,9 @@ export default function (pi: ExtensionAPI) {
 		const sshOptions = rest.slice(0, -1);
 		for (let i = 0; i < sshOptions.length; i++) {
 			const opt = sshOptions[i];
+			if (opt === "-o" && (sshOptions[i + 1] === undefined || sshOptions[i + 1] === "")) {
+				throw new Error("-o requires a value, e.g. -o StrictHostKeyChecking=no (got -o with nothing after it)");
+			}
 			const value = opt === "-o" ? (sshOptions[i + 1] ?? "") : opt.startsWith("-o") ? opt.slice(2) : "";
 			if (opt === "-S" || opt.startsWith("-S") || opt === "-M" || opt.startsWith("-M") || /^Control(?:Master|Path|Persist)\b/i.test(value)) {
 				throw new Error("pi SSH manages ControlMaster/ControlPath internally. Use --fresh/--hard to force a new login session instead of overriding mux options.");
