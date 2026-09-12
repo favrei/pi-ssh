@@ -1,3 +1,8 @@
+> **Fork note.** This is a clone of
+> [`github.com/HCAHOI/pi-ssh`](https://github.com/HCAHOI/pi-ssh),
+> maintained here with fixes for issues encountered in real use.
+> Install the fork, not the original.
+
 # SSH Remote Execution Extension
 
 Edit locally, test/run remotely. Adds `ssh_*` tools
@@ -7,11 +12,6 @@ that operate on an active SSH remote while the built-in
 
 Zero third-party runtime dependencies — a single `index.ts` over node builtins
 and pi's bundled core packages, sharing one OpenSSH ControlMaster connection.
-
-> **Fork note.** This is a clone of
-> [`github.com/HCAHOI/pi-ssh`](https://github.com/HCAHOI/pi-ssh),
-> maintained here with fixes for issues encountered in real use.
-> Install the fork, not the original.
 
 ## Install
 
