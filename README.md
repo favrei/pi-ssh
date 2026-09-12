@@ -8,17 +8,48 @@ that operate on an active SSH remote while the built-in
 Zero third-party runtime dependencies — a single `index.ts` over node builtins
 and pi's bundled core packages, sharing one OpenSSH ControlMaster connection.
 
+> **Fork note.** This is a clone of
+> [`github.com/HCAHOI/pi-ssh`](https://github.com/HCAHOI/pi-ssh),
+> maintained here with fixes for issues encountered in real use.
+> Install the fork, not the original.
+
 ## Install
 
 ```bash
-pi install git:github.com/HCAHOI/pi-ssh
+pi install git:github.com/favrei/pi-ssh
 # or try it for one run without installing:
-pi -e git:github.com/HCAHOI/pi-ssh
+pi -e git:github.com/favrei/pi-ssh
 ```
 
-Then connect with `/ssh user@host[:/abs/path]` (see below). Requires key-based
-SSH auth (no password prompts) and `bash` on the remote; `python3` on the remote
-enables the efficient in-place `ssh_edit`.
+## Quickstart
+
+The loop is: edit locally, sync, run remotely, pull back results.
+
+```
+/ssh user@host:/abs/work          # connect; this becomes the remote cwd
+ssh_bash command="git rev-parse HEAD && python3 -m pytest tests/ -x -q"
+```
+
+Commands already run in the remote cwd — never prepend `cd`; pass the `cwd`
+param only to run elsewhere. Keep `ssh_bash` short: anything over a couple
+of minutes belongs in `ssh_process`, which survives disconnects and notifies
+on completion.
+
+```
+ssh_push localPath=options/train.toml remotePath=options/      # one file up
+ssh_push dryRun=true                                            # preview a big sync
+ssh_bash command="python3 train.py --config options/train.toml"
+ssh_process start command="python3 train.py --config options/train.toml"
+ssh_pull remotePath=results/metrics.json localPath=results/metrics.json
+```
+
+Single files keep their paths both ways: `remotePath` / `localPath` may be a
+file (rename works) or a directory (trailing `/`), and missing parents are
+created. `ssh_push` respects `.gitignore`. Details in the sections below.
+
+Connection requirements: key-based SSH auth (no password prompts) and `bash`
+on the remote; `python3` on the remote enables the efficient in-place
+`ssh_edit`. Full connection reference:
 
 ## Connect
 
