@@ -1,7 +1,7 @@
 > **Fork note.** This is a clone of
 > [`github.com/HCAHOI/pi-ssh`](https://github.com/HCAHOI/pi-ssh),
 > maintained here with fixes for issues encountered in real use.
-> Install the fork, not the original.
+> To enable the changes here, install this fork instead of the original.
 
 # SSH Remote Execution Extension
 
