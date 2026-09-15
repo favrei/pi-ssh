@@ -86,10 +86,14 @@ export function createPollerManager(pi: ExtensionAPI): PollerManager {
 		else if (code >= 128) outcome = "killed"; // 128 + signal
 		else outcome = "failure";
 		// Mark completion handled so a later reconnect/rehydrate never re-notifies for
-		// this job, regardless of whether this particular alert was opted into.
-		await runRemoteCommand(p.target, `touch -- ${shQuote(`${p.dir}/notified`)}`, { timeout: 20, login: false }).catch(() => {});
+		// this job — but ONLY after a wanted alert was actually emitted (or when no
+		// alert was wanted at all). Marking before a failed emit used to convert one
+		// lost delivery into permanently silent (rehydrate skips marked jobs forever).
 		const want = outcome === "success" ? p.alertOnSuccess : outcome === "killed" ? p.alertOnKill : p.alertOnFailure;
-		if (!want) return;
+		if (!want) {
+			await runRemoteCommand(p.target, `touch -- ${shQuote(`${p.dir}/notified`)}`, { timeout: 20, login: false }).catch(() => {});
+			return;
+		}
 		const tailCmd = `d=${shQuote(p.dir)}; echo '--- stdout (tail) ---'; tail -n 15 "$d/stdout.log" 2>/dev/null; echo '--- stderr (tail) ---'; tail -n 15 "$d/stderr.log" 2>/dev/null`;
 		const tr = await runRemoteCommand(p.target, tailCmd, { timeout: 20, login: false }).catch(() => null);
 		const tail = tr && tr.code === 0 ? tr.stdout.toString().trimEnd() : "";
@@ -99,14 +103,23 @@ export function createPollerManager(pi: ExtensionAPI): PollerManager {
 		const superseded = latest !== undefined && latest !== p.procId;
 		const supersedeLabel = superseded ? " [superseded: a newer run of this name was started after it]" : "";
 		const ageLabel = p.startedAt ? ` after ${formatDuration(Date.now() - p.startedAt)}` : "";
-		emit(`${emoji} ssh_process "${p.name}" (${p.procId})${supersedeLabel} ${outcome}${codeLabel}${ageLabel}.${tail ? `\n${tail}` : ""}`, {
-			kind: "completion",
+		try {
+			emit(`${emoji} ssh_process "${p.name}" (${p.procId})${supersedeLabel} ${outcome}${codeLabel}${ageLabel}.${tail ? `\n${tail}` : ""}`, {
+				kind: "completion",
 			procId: p.procId,
 			name: p.name,
 			outcome,
 			code,
 			superseded,
-		});
+			});
+		} catch {
+			// Delivery failed (e.g. session torn down mid-emit): leave `notified`
+			// untouched so a later rehydrate re-arms, and let the next tick retry.
+			// tick() swallows this; the poller survives.
+			p.finished = false;
+			return;
+		}
+		await runRemoteCommand(p.target, `touch -- ${shQuote(`${p.dir}/notified`)}`, { timeout: 20, login: false }).catch(() => {});
 	}
 
 	async function tick(p: PollerState): Promise<void> {
@@ -130,6 +143,9 @@ export function createPollerManager(pi: ExtensionAPI): PollerManager {
 			if (status === "running") return;
 			p.finished = true;
 			await fireCompletion(p, code);
+			// fireCompletion resets finished when delivery failed so the next tick
+			// retries; only drop the poller once the completion was handled.
+			if (!p.finished) return;
 			stopPoller(p.procId);
 		} catch {
 			// Swallow: a single failed tick must never escape setInterval and kill the
