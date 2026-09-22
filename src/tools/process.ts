@@ -145,13 +145,13 @@ export function setupProcessTool(ssh: SshContext): void {
 				// and auto-remove when the job ends; manageable via ssh_monitor.
 				const watchCount = watchSpecs.length;
 				if (watchCount) await monitors.createForProcess(t, procId, watchSpecs, name);
-				// Point-of-need discovery: this job already alerts on failure; nudge the
-				// agent toward success/log-watch notifications only when it did not opt in,
-				// so it stops polling list/output. Suppressed once the feature is used.
-				const optedIntoNotify = (params.alertOnSuccess ?? true) || (params.alertOnKill ?? false) || watchCount > 0;
-				const tip = optedIntoNotify
-					? ""
-					: "\nWill notify you automatically if it fails — do not poll. Pass alertOnSuccess and/or logWatches to also be notified on success or when a log line matches.";
+				// Point-of-need discovery: completion alerts are on by default, so the only
+				// job that still needs the nudge is one that explicitly switched success
+				// alerts off — it keeps alerting on failure, and logWatches remain available.
+				const silencedSuccess = params.alertOnSuccess === false && params.alertOnKill !== true && watchCount === 0;
+				const tip = silencedSuccess
+					? "\nSuccess alerts are off for this job; it will still notify you if it fails — do not poll. Pass logWatches to also be notified when a log line matches."
+					: "";
 				return { content: [{ type: "text" as const, text: `Started remote process ${procId} (${name})\nstdout: ${dir}/stdout.log\nstderr: ${dir}/stderr.log${tip}` }], details: { id: procId, name, stdout: `${dir}/stdout.log`, stderr: `${dir}/stderr.log` } };
 			}
 
