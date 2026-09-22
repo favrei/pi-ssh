@@ -46,7 +46,7 @@ export function setupProcessTool(ssh: SshContext): void {
 			commandPrefix: Type.Optional(Type.String({ description: "Shell code run before command" })),
 			lines: Type.Optional(Type.Number({ description: "Number of recent log lines for output (default 80)" })),
 			followSeconds: Type.Optional(Type.Number({ description: "output: stream new stdout/stderr lines live for this many seconds before returning" })),
-			alertOnSuccess: Type.Optional(Type.Boolean({ description: "start: notify when the job exits 0 (default false)" })),
+			alertOnSuccess: Type.Optional(Type.Boolean({ description: "start: notify when the job exits 0 (default true)" })),
 			alertOnFailure: Type.Optional(Type.Boolean({ description: "start: notify when the job exits non-zero (default true)" })),
 			alertOnKill: Type.Optional(Type.Boolean({ description: "start: notify when the job is killed by a signal (default false)" })),
 			logWatches: Type.Optional(Type.Array(Type.Object({
@@ -108,7 +108,7 @@ export function setupProcessTool(ssh: SshContext): void {
 				// written here anymore — each becomes its own standalone monitor file below.
 				const notifyJson = JSON.stringify({
 					name,
-					alertOnSuccess: params.alertOnSuccess ?? false,
+					alertOnSuccess: params.alertOnSuccess ?? true,
 					alertOnFailure: params.alertOnFailure ?? true,
 					alertOnKill: params.alertOnKill ?? false,
 				} satisfies NotifyConfig);
@@ -135,7 +135,7 @@ export function setupProcessTool(ssh: SshContext): void {
 					name,
 					dir,
 					target: t,
-					alertOnSuccess: params.alertOnSuccess ?? false,
+					alertOnSuccess: params.alertOnSuccess ?? true,
 					alertOnFailure: params.alertOnFailure ?? true,
 					alertOnKill: params.alertOnKill ?? false,
 					startedAt: Date.now(),
@@ -148,7 +148,7 @@ export function setupProcessTool(ssh: SshContext): void {
 				// Point-of-need discovery: this job already alerts on failure; nudge the
 				// agent toward success/log-watch notifications only when it did not opt in,
 				// so it stops polling list/output. Suppressed once the feature is used.
-				const optedIntoNotify = (params.alertOnSuccess ?? false) || (params.alertOnKill ?? false) || watchCount > 0;
+				const optedIntoNotify = (params.alertOnSuccess ?? true) || (params.alertOnKill ?? false) || watchCount > 0;
 				const tip = optedIntoNotify
 					? ""
 					: "\nWill notify you automatically if it fails — do not poll. Pass alertOnSuccess and/or logWatches to also be notified on success or when a log line matches.";

@@ -201,7 +201,7 @@ agents no longer need to copy opaque process ids for named jobs.
 pushes a message that **re-engages the agent** when something happens, so you
 never loop on `list`/`output`:
 
-- `alertOnSuccess` (default `false`), `alertOnFailure` (default `true`),
+- `alertOnSuccess` (default `true`), `alertOnFailure` (default `true`),
   `alertOnKill` (default `false`) — fire on exit, classified by exit code
   (`0` success / `>=128` or missing `exit_code` killed / other failure).
 - `logWatches: [{ pattern, stream?, repeat?, notify?, template? }]` — fire when a

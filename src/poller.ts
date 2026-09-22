@@ -237,7 +237,7 @@ print(json.dumps(out))
 				name: cfg.name?.trim() || e.id,
 				dir: `${root}/${e.id}`,
 				target: t,
-				alertOnSuccess: cfg.alertOnSuccess ?? false,
+				alertOnSuccess: cfg.alertOnSuccess ?? true,
 				alertOnFailure: cfg.alertOnFailure ?? true,
 				alertOnKill: cfg.alertOnKill ?? false,
 			});
